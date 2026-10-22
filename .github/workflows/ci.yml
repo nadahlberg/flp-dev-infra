@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.CL_REPO || 'freelawproject/courtlistener' }}
+          ref: ${{ vars.CL_REF || 'main' }}
+          path: cl-src
+          token: ${{ secrets.GH_TOKEN }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.MCP_REPO || 'freelawproject/courtlistener-api-client' }}
+          ref: ${{ vars.MCP_REF || 'main' }}
+          path: mcp-src
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Resolve image tags
+        run: |
+          echo "CL_IMAGE_TAG=$(git -C cl-src rev-parse --short HEAD)-${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "MCP_IMAGE_TAG=$(git -C mcp-src rev-parse --short HEAD)-${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - uses: pulumi/actions@v7
+        with:
+          command: preview
+          stack-name: dev
+          work-dir: infra
+          upsert: true
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          CL_CONTEXT: ../cl-src
+          MCP_CONTEXT: ../mcp-src
+          DEV_USER_NAME: ${{ vars.DEV_USER_NAME || 'dev' }}
+          DEV_USER_EMAIL: ${{ secrets.DEV_USER_EMAIL }}
+          DEV_USER_PASSWORD: ${{ secrets.DEV_USER_PASSWORD }}
+          CL_API_TOKEN: ${{ secrets.CL_API_TOKEN }}
+          CL_SENTRY_DSN: ${{ secrets.CL_SENTRY_DSN }}
+          MCP_SENTRY_DSN: ${{ secrets.MCP_SENTRY_DSN }}
