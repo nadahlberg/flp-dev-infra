@@ -42,7 +42,12 @@ for _directive, _sources in SECURE_CSP.items():
 # self-signed dev container. The client refuses TLS options on a plain
 # http:// host, and the in-cluster single node runs without TLS.
 for _conn in ELASTICSEARCH_DSL.values():
-    if isinstance(_conn, dict) and str(_conn.get("hosts", "")).startswith("http://"):
+    if not isinstance(_conn, dict) or "hosts" not in _conn:
+        continue
+    # ELASTICSEARCH_DSL_HOST is parsed as a list by django-environ.
+    _hosts = _conn["hosts"]
+    _first = _hosts[0] if isinstance(_hosts, (list, tuple)) else _hosts
+    if str(_first).startswith("http://"):
         _conn.pop("ca_certs", None)
         _conn.pop("verify_certs", None)
 
