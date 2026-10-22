@@ -1,266 +1,281 @@
-"""CourtListener at cl.nates.ai.
+"""One CourtListener deployment per slug, at cl-<slug>.flp-dev.nates.ai.
 
 Runs the real image in production mode (gunicorn, DEVELOPMENT=off) with a
 settings overlay from this folder covering what production assumes but this
 environment does not have (AWS S3, SES). A bootstrap Job migrates, seeds
-users and the MCP's OAuth application, and loads sample data on every deploy.
+users and the OAuth applications of the MCP deploys that point here, and
+optionally loads and indexes sample data, on every deploy.
 """
 
+import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import pulumi
 import pulumi_digitalocean as do
+import pulumi_docker_build as docker_build
 import pulumi_kubernetes as k8s
 import pulumi_random as random
 import pulumi_tls as tls
 
 import core
 from core.dns import subdomain
-from core.images import build_image, pull_secret
+from core.images import pull_secret
+from deploys import CourtListenerDeploy, cl_host, mcp_host
 
-DOMAIN = "cl.nates.ai"
-MCP_DOMAIN = "cl-mcp.nates.ai"
-APP = "courtlistener"
 HERE = Path(__file__).parent
 
-image_tag = os.getenv("CL_IMAGE_TAG", "dev")
-build_context = os.getenv("CL_CONTEXT", "../../courtlistener")
-dev_user_name = os.getenv("DEV_USER_NAME", "dev")
 
-k8s_opts = pulumi.ResourceOptions(provider=core.doks)
+@dataclass(frozen=True)
+class OAuthClient:
+    """An MCP deploy's confidential OAuth application at this CourtListener."""
 
-namespace = k8s.core.v1.Namespace(
-    "cl-namespace",
-    metadata={"name": APP},
-    opts=k8s_opts,
-)
+    name: str
+    client_id: pulumi.Output[str]
+    client_secret: pulumi.Output[str]
+    redirect_uri: str
 
-ns_opts = pulumi.ResourceOptions(provider=core.doks, depends_on=[namespace])
 
-database = do.DatabaseDb(
-    "cl-db",
-    cluster_id=core.postgres.id,
-    name=APP,
-)
+@dataclass(frozen=True)
+class CourtListener:
+    """What other modules need to know about a deployed CL slug."""
 
-# Static files (and any S3-backed media) live on Spaces, DO's S3-compatible
-# object store, since CL's production settings only know how to serve static
-# files from a bucket.
-spaces_key = do.SpacesKey(
-    "cl-spaces",
-    grants=[do.SpacesKeyGrantArgs(bucket="", permission="fullaccess")],
-)
+    slug: str
+    host: str
+    namespace: str
+    project_urns: list[pulumi.Output[str]]
 
-spaces = do.Provider(
-    "cl-spaces-provider",
-    spaces_access_id=spaces_key.access_key,
-    spaces_secret_key=spaces_key.secret_key,
-)
 
-public_bucket = do.SpacesBucket(
-    "cl-storage",
-    region=core.region,
-    acl="public-read",
-    opts=pulumi.ResourceOptions(provider=spaces),
-)
+def deploy(
+    slug: str,
+    spec: CourtListenerDeploy,
+    image_ref: str,
+    image: docker_build.Image,
+    source_path: str,
+    oauth_clients: list[OAuthClient],
+) -> CourtListener:
+    """Stand up every resource of one CourtListener slug."""
+    name = f"cl-{slug}"
+    host = cl_host(slug)
+    hosts = [host, *spec.aliases]
+    k8s_opts = pulumi.ResourceOptions(provider=core.doks)
 
-do.SpacesBucketCorsConfiguration(
-    "cl-storage-cors",
-    bucket=public_bucket.id,
-    region=core.region,
-    cors_rules=[
-        do.SpacesBucketCorsConfigurationCorsRuleArgs(
-            allowed_methods=["GET", "HEAD"],
-            allowed_origins=[f"https://{DOMAIN}"],
-            allowed_headers=["*"],
-            max_age_seconds=86400,
-        )
-    ],
-    opts=pulumi.ResourceOptions(provider=spaces),
-)
+    namespace = k8s.core.v1.Namespace(
+        f"{name}-namespace", metadata={"name": name}, opts=k8s_opts
+    )
+    ns_opts = pulumi.ResourceOptions(provider=core.doks, depends_on=[namespace])
 
-private_bucket = do.SpacesBucket(
-    "cl-private-storage",
-    region=core.region,
-    opts=pulumi.ResourceOptions(provider=spaces),
-)
+    database = do.DatabaseDb(
+        f"{name}-db", cluster_id=core.postgres.id, name=f"cl_{slug}"
+    )
 
-spaces_endpoint = f"https://{core.region}.digitaloceanspaces.com"
-storage_domain = public_bucket.name.apply(
-    lambda name: f"{name}.{core.region}.digitaloceanspaces.com"
-)
+    # --- Spaces: static files (and S3-backed media) ------------------------
 
-image_ref, image = build_image(
-    "cl-image",
-    name="flp-dev-courtlistener",
-    tag=image_tag,
-    context=build_context,
-    dockerfile=f"{build_context}/docker/django/Dockerfile",
-    build_args={"BUILD_ENV": "prod"},
-)
-
-registry_pull = pull_secret("cl-ghcr-pull", APP, ns_opts)
-pull_secrets = [{"name": registry_pull.metadata.name}]
-
-# --- Redis -----------------------------------------------------------------
-
-redis_labels = {"app": "redis"}
-
-redis_deployment = k8s.apps.v1.Deployment(
-    "cl-redis",
-    metadata={"namespace": APP, "name": "redis"},
-    spec={
-        "selector": {"match_labels": redis_labels},
-        "template": {
-            "metadata": {"labels": redis_labels},
-            "spec": {
-                "containers": [
-                    {
-                        "name": "redis",
-                        "image": "redis:7",
-                        "ports": [{"container_port": 6379}],
-                        "resources": {"requests": {"memory": "64Mi"}},
-                    }
-                ],
-            },
-        },
-    },
-    opts=ns_opts,
-)
-
-redis_service = k8s.core.v1.Service(
-    "cl-redis-service",
-    metadata={"name": "redis", "namespace": APP},
-    spec={"selector": redis_labels, "ports": [{"port": 6379}]},
-    opts=ns_opts,
-)
-
-# --- Elasticsearch ---------------------------------------------------------
-
-# CL's index analyzers reference these dictionaries by path inside the ES
-# config directory, so they ride along from the CL checkout.
-es_files = Path(build_context) / "cl" / "search" / "elasticsearch_files"
-es_dictionaries = k8s.core.v1.ConfigMap(
-    "cl-es-dictionaries",
-    metadata={"namespace": APP, "name": "es-dictionaries"},
-    data={
-        "synonyms_en.txt": (es_files / "synonyms_en.txt").read_text(),
-        "stopwords_en.txt": (es_files / "stopwords_en.txt").read_text(),
-    },
-    opts=ns_opts,
-)
-
-elasticsearch_labels = {"app": "elasticsearch"}
-
-elasticsearch_statefulset = k8s.apps.v1.StatefulSet(
-    "cl-elasticsearch",
-    metadata={"namespace": APP, "name": "elasticsearch"},
-    spec={
-        "service_name": "elasticsearch",
-        "selector": {"match_labels": elasticsearch_labels},
-        "template": {
-            "metadata": {"labels": elasticsearch_labels},
-            "spec": {
-                "security_context": {"fs_group": 1000},
-                "init_containers": [
-                    {
-                        "name": "max-map-count",
-                        "image": "busybox:1.37",
-                        "command": ["sysctl", "-w", "vm.max_map_count=262144"],
-                        "security_context": {"privileged": True},
-                    }
-                ],
-                "containers": [
-                    {
-                        "name": "elasticsearch",
-                        "image": "elastic/elasticsearch:9.3.1",
-                        "ports": [{"container_port": 9200}],
-                        "env": [
-                            {"name": "discovery.type", "value": "single-node"},
-                            {"name": "cluster.name", "value": "courtlistener-cluster"},
-                            {
-                                "name": "cluster.routing.allocation.disk.threshold_enabled",
-                                "value": "false",
-                            },
-                            {"name": "xpack.security.enabled", "value": "false"},
-                            {"name": "ES_JAVA_OPTS", "value": "-Xms1g -Xmx1g"},
-                        ],
-                        "resources": {"requests": {"memory": "2Gi"}},
-                        "volume_mounts": [
-                            {
-                                "name": "data",
-                                "mount_path": "/usr/share/elasticsearch/data",
-                            },
-                            {
-                                "name": "dictionaries",
-                                "mount_path": "/usr/share/elasticsearch/config/dictionaries",
-                            },
-                        ],
-                        "readiness_probe": {
-                            "http_get": {"path": "/_cluster/health", "port": 9200},
-                            "period_seconds": 30,
-                            "timeout_seconds": 5,
-                        },
-                    }
-                ],
-                "volumes": [
-                    {
-                        "name": "dictionaries",
-                        "config_map": {"name": es_dictionaries.metadata.name},
-                    }
-                ],
-            },
-        },
-        "volume_claim_templates": [
-            {
-                "metadata": {"name": "data"},
-                "spec": {
-                    "access_modes": ["ReadWriteOnce"],
-                    "resources": {"requests": {"storage": "10Gi"}},
-                },
-            }
+    spaces_key = do.SpacesKey(
+        f"{name}-spaces",
+        grants=[do.SpacesKeyGrantArgs(bucket="", permission="fullaccess")],
+    )
+    spaces = do.Provider(
+        f"{name}-spaces-provider",
+        spaces_access_id=spaces_key.access_key,
+        spaces_secret_key=spaces_key.secret_key,
+    )
+    public_bucket = do.SpacesBucket(
+        f"{name}-storage",
+        region=core.region,
+        acl="public-read",
+        opts=pulumi.ResourceOptions(provider=spaces),
+    )
+    do.SpacesBucketCorsConfiguration(
+        f"{name}-storage-cors",
+        bucket=public_bucket.id,
+        region=core.region,
+        cors_rules=[
+            do.SpacesBucketCorsConfigurationCorsRuleArgs(
+                allowed_methods=["GET", "HEAD"],
+                allowed_origins=[f"https://{h}" for h in hosts],
+                allowed_headers=["*"],
+                max_age_seconds=86400,
+            )
         ],
-    },
-    opts=ns_opts,
-)
+        opts=pulumi.ResourceOptions(provider=spaces),
+    )
+    private_bucket = do.SpacesBucket(
+        f"{name}-private-storage",
+        region=core.region,
+        opts=pulumi.ResourceOptions(provider=spaces),
+    )
+    spaces_endpoint = f"https://{core.region}.digitaloceanspaces.com"
+    storage_domain = public_bucket.name.apply(
+        lambda b: f"{b}.{core.region}.digitaloceanspaces.com"
+    )
 
-elasticsearch_service = k8s.core.v1.Service(
-    "cl-elasticsearch-service",
-    metadata={"name": "elasticsearch", "namespace": APP},
-    spec={"selector": elasticsearch_labels, "ports": [{"port": 9200}]},
-    opts=ns_opts,
-)
+    registry_pull = pull_secret(f"{name}-ghcr-pull", name, ns_opts)
+    pull_secrets = [{"name": registry_pull.metadata.name}]
 
-# --- Secrets and config ----------------------------------------------------
+    # --- Redis -------------------------------------------------------------
 
-secret_key = random.RandomPassword("cl-secret-key", length=64, special=False)
-oidc_key = tls.PrivateKey("cl-oidc-key", algorithm="RSA", rsa_bits=4096)
+    redis_labels = {"app": "redis"}
+    k8s.apps.v1.Deployment(
+        f"{name}-redis",
+        metadata={"namespace": name, "name": "redis"},
+        spec={
+            "selector": {"match_labels": redis_labels},
+            "template": {
+                "metadata": {"labels": redis_labels},
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "redis",
+                            "image": "redis:7",
+                            "ports": [{"container_port": 6379}],
+                            "resources": {"requests": {"memory": "64Mi"}},
+                        }
+                    ],
+                },
+            },
+        },
+        opts=ns_opts,
+    )
+    redis_service = k8s.core.v1.Service(
+        f"{name}-redis-service",
+        metadata={"name": "redis", "namespace": name},
+        spec={"selector": redis_labels, "ports": [{"port": 6379}]},
+        opts=ns_opts,
+    )
 
-# The MCP server's confidential OAuth application at this CourtListener. Both
-# sides read the same generated values: seed.py registers the application,
-# the mcp module hands them to the server as its client credentials.
-oauth_client_id = random.RandomPassword("cl-mcp-client-id", length=40, special=False)
-oauth_client_secret = random.RandomPassword(
-    "cl-mcp-client-secret", length=96, special=False
-)
+    # --- Elasticsearch -----------------------------------------------------
 
-# Everything the bootstrap Job and the pods need, mounted at /opt/flp-dev.
-overlay = k8s.core.v1.ConfigMap(
-    "cl-overlay",
-    metadata={"namespace": APP, "name": "flp-dev"},
-    data={
-        "flp_dev_settings.py": (HERE / "flp_dev_settings.py").read_text(),
-        "bootstrap.sh": (HERE / "bootstrap.sh").read_text(),
-        "seed.py": (HERE / "seed.py").read_text(),
-    },
-    opts=ns_opts,
-)
+    # CL's index analyzers reference these dictionaries by path inside the ES
+    # config directory, so they ride along from this slug's checkout.
+    es_files = Path(source_path) / "cl" / "search" / "elasticsearch_files"
+    es_dictionaries = k8s.core.v1.ConfigMap(
+        f"{name}-es-dictionaries",
+        metadata={"namespace": name, "name": "es-dictionaries"},
+        data={
+            "synonyms_en.txt": (es_files / "synonyms_en.txt").read_text(),
+            "stopwords_en.txt": (es_files / "stopwords_en.txt").read_text(),
+        },
+        opts=ns_opts,
+    )
+    es_labels = {"app": "elasticsearch"}
+    elasticsearch = k8s.apps.v1.StatefulSet(
+        f"{name}-elasticsearch",
+        metadata={"namespace": name, "name": "elasticsearch"},
+        spec={
+            "service_name": "elasticsearch",
+            "selector": {"match_labels": es_labels},
+            "template": {
+                "metadata": {"labels": es_labels},
+                "spec": {
+                    "security_context": {"fs_group": 1000},
+                    "init_containers": [
+                        {
+                            "name": "max-map-count",
+                            "image": "busybox:1.37",
+                            "command": ["sysctl", "-w", "vm.max_map_count=262144"],
+                            "security_context": {"privileged": True},
+                        }
+                    ],
+                    "containers": [
+                        {
+                            "name": "elasticsearch",
+                            "image": "elastic/elasticsearch:9.3.1",
+                            "ports": [{"container_port": 9200}],
+                            "env": [
+                                {"name": "discovery.type", "value": "single-node"},
+                                {"name": "cluster.name", "value": f"{name}-cluster"},
+                                {
+                                    "name": "cluster.routing.allocation.disk.threshold_enabled",
+                                    "value": "false",
+                                },
+                                {"name": "xpack.security.enabled", "value": "false"},
+                                {"name": "ES_JAVA_OPTS", "value": "-Xms1g -Xmx1g"},
+                            ],
+                            "resources": {"requests": {"memory": "2Gi"}},
+                            "volume_mounts": [
+                                {
+                                    "name": "data",
+                                    "mount_path": "/usr/share/elasticsearch/data",
+                                },
+                                {
+                                    "name": "dictionaries",
+                                    "mount_path": "/usr/share/elasticsearch/config/dictionaries",
+                                },
+                            ],
+                            "readiness_probe": {
+                                "http_get": {"path": "/_cluster/health", "port": 9200},
+                                "period_seconds": 30,
+                                "timeout_seconds": 5,
+                            },
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "dictionaries",
+                            "config_map": {"name": es_dictionaries.metadata.name},
+                        }
+                    ],
+                },
+            },
+            "volume_claim_templates": [
+                {
+                    "metadata": {"name": "data"},
+                    "spec": {
+                        "access_modes": ["ReadWriteOnce"],
+                        "resources": {"requests": {"storage": "10Gi"}},
+                    },
+                }
+            ],
+        },
+        opts=ns_opts,
+    )
+    es_service = k8s.core.v1.Service(
+        f"{name}-elasticsearch-service",
+        metadata={"name": "elasticsearch", "namespace": name},
+        spec={"selector": es_labels, "ports": [{"port": 9200}]},
+        opts=ns_opts,
+    )
 
-app_env = k8s.core.v1.Secret(
-    "cl-app-env",
-    metadata={"namespace": APP, "name": "app-env"},
-    string_data={
+    # --- Secrets and config ------------------------------------------------
+
+    secret_key = random.RandomPassword(f"{name}-secret-key", length=64, special=False)
+    oidc_key = tls.PrivateKey(f"{name}-oidc-key", algorithm="RSA", rsa_bits=4096)
+
+    # The OAuth applications seed.py registers: one per MCP deploy that
+    # authenticates against this slug.
+    clients_json = pulumi.Output.all(
+        *[c.client_id for c in oauth_clients],
+        *[c.client_secret for c in oauth_clients],
+    ).apply(
+        lambda vals: json.dumps(
+            [
+                {
+                    "name": c.name,
+                    "client_id": vals[i],
+                    "client_secret": vals[len(oauth_clients) + i],
+                    "redirect_uri": c.redirect_uri,
+                }
+                for i, c in enumerate(oauth_clients)
+            ]
+        )
+    )
+
+    extra_sh = "\n".join(["#!/bin/sh", "set -eu", *spec.bootstrap_extra, ""])
+    overlay = k8s.core.v1.ConfigMap(
+        f"{name}-overlay",
+        metadata={"namespace": name, "name": "flp-dev"},
+        data={
+            "flp_dev_settings.py": (HERE / "flp_dev_settings.py").read_text(),
+            "bootstrap.sh": (HERE / "bootstrap.sh").read_text(),
+            "seed.py": (HERE / "seed.py").read_text(),
+            "extra.sh": extra_sh,
+        },
+        opts=ns_opts,
+    )
+
+    env: dict[str, pulumi.Input[str]] = {
         # Settings selection: CL's own settings plus the overlay.
         "DJANGO_SETTINGS_MODULE": "flp_dev_settings",
         "PYTHONPATH": "/opt/courtlistener:/opt/flp-dev",
@@ -268,7 +283,7 @@ app_env = k8s.core.v1.Secret(
         "SECRET_KEY": secret_key.result,
         "DEBUG": "off",
         "DEVELOPMENT": "off",
-        "ALLOWED_HOSTS": f"{DOMAIN},localhost,127.0.0.1",
+        "ALLOWED_HOSTS": ",".join([*hosts, "localhost", "127.0.0.1"]),
         "TIMEZONE": "America/New_York",
         # Database (the port is applied by the overlay; CL only reads DB_HOST)
         "DB_NAME": database.name,
@@ -293,10 +308,7 @@ app_env = k8s.core.v1.Secret(
         "MAX_REQUESTS": "1000",
         # OAuth / OIDC
         "OIDC_RSA_PRIVATE_KEY": oidc_key.private_key_pem,
-        "OAUTH2_MCP_URL": f"https://{MCP_DOMAIN}",
-        "MCP_BASE_URL": f"https://{MCP_DOMAIN}",
-        "MCP_OAUTH_CLIENT_ID": oauth_client_id.result,
-        "MCP_OAUTH_CLIENT_SECRET": oauth_client_secret.result,
+        "MCP_OAUTH_CLIENTS": clients_json,
         # Spaces (S3-compatible); the overlay reads the endpoint and domain
         "AWS_ACCESS_KEY_ID": spaces_key.access_key,
         "AWS_SECRET_ACCESS_KEY": spaces_key.secret_key,
@@ -308,180 +320,193 @@ app_env = k8s.core.v1.Secret(
         # hCaptcha's published test keys: the widget always passes
         "HCAPTCHA_SITEKEY": "10000000-ffff-ffff-ffff-000000000001",
         "HCAPTCHA_SECRET": "0x0000000000000000000000000000000000000000",
-        # Seeding
-        "DEV_USER_NAME": dev_user_name,
+        # Bootstrap behaviour
+        "DEV_USER_NAME": os.getenv("DEV_USER_NAME", "dev"),
         "DEV_USER_EMAIL": os.getenv("DEV_USER_EMAIL", ""),
         "DEV_USER_PASSWORD": os.getenv("DEV_USER_PASSWORD", ""),
-        "TEST_USER_COUNT": "3",
-        "SEED_DEV_DATA": "on",
+        "TEST_USER_COUNT": str(spec.test_users),
+        "SEED_DEV_DATA": "on" if spec.seed_dev_data else "off",
+        "INDEX_SEARCH": "on" if spec.index_search else "off",
         "CL_API_TOKEN": os.getenv("CL_API_TOKEN", ""),
         # Misc
         "SENTRY_DSN": os.getenv("CL_SENTRY_DSN", ""),
-    },
-    opts=ns_opts,
-)
+    }
+    if spec.mcp is not None:
+        env["OAUTH2_MCP_URL"] = f"https://{mcp_host(spec.mcp)}"
+    env.update(spec.env)
 
-env_from = [{"secret_ref": {"name": app_env.metadata.name}}]
-overlay_volume = {"name": "flp-dev", "config_map": {"name": overlay.metadata.name}}
-overlay_mount = {"name": "flp-dev", "mount_path": "/opt/flp-dev", "read_only": True}
+    app_env = k8s.core.v1.Secret(
+        f"{name}-app-env",
+        metadata={"namespace": name, "name": "app-env"},
+        string_data=env,
+        opts=ns_opts,
+    )
+    env_from = [{"secret_ref": {"name": app_env.metadata.name}}]
+    overlay_volume = {"name": "flp-dev", "config_map": {"name": overlay.metadata.name}}
+    overlay_mount = {"name": "flp-dev", "mount_path": "/opt/flp-dev", "read_only": True}
 
-# --- Bootstrap: migrate, seed, index --------------------------------------
+    # --- Bootstrap: migrate, seed, index -----------------------------------
 
-bootstrap = k8s.batch.v1.Job(
-    "cl-bootstrap",
-    metadata={"namespace": APP},
-    spec={
-        "backoff_limit": 1,
-        "ttl_seconds_after_finished": 3600,
-        "template": {
-            "spec": {
-                "restart_policy": "Never",
-                "image_pull_secrets": pull_secrets,
-                "volumes": [overlay_volume],
-                "containers": [
-                    {
-                        "name": "bootstrap",
-                        "image": image_ref,
-                        "command": ["/bin/sh", "/opt/flp-dev/bootstrap.sh"],
-                        "env_from": env_from,
-                        "volume_mounts": [overlay_mount],
-                    }
-                ],
-            },
-        },
-    },
-    opts=pulumi.ResourceOptions(
-        provider=core.doks,
-        depends_on=[
-            namespace,
-            image,
-            app_env,
-            overlay,
-            redis_service,
-            elasticsearch_service,
-            elasticsearch_statefulset,
-        ],
-        custom_timeouts=pulumi.CustomTimeouts(create="30m"),
-    ),
-)
-
-# --- Web and celery -------------------------------------------------------
-
-web_labels = {"app": "web"}
-
-web_deployment = k8s.apps.v1.Deployment(
-    "cl-web",
-    metadata={"namespace": APP, "name": "web"},
-    spec={
-        "selector": {"match_labels": web_labels},
-        "template": {
-            "metadata": {"labels": web_labels},
-            "spec": {
-                "image_pull_secrets": pull_secrets,
-                "volumes": [overlay_volume],
-                "containers": [
-                    {
-                        "name": "web",
-                        "image": image_ref,
-                        "args": ["web-prod"],
-                        "ports": [{"container_port": 8000}],
-                        "env_from": env_from,
-                        "volume_mounts": [overlay_mount],
-                        "resources": {"requests": {"memory": "1Gi"}},
-                        "liveness_probe": {
-                            "tcp_socket": {"port": 8000},
-                            "period_seconds": 30,
-                        },
-                        "readiness_probe": {
-                            "tcp_socket": {"port": 8000},
-                            "period_seconds": 10,
-                        },
-                    }
-                ],
-            },
-        },
-    },
-    opts=pulumi.ResourceOptions(provider=core.doks, depends_on=[bootstrap]),
-)
-
-celery_labels = {"app": "celery"}
-
-celery_deployment = k8s.apps.v1.Deployment(
-    "cl-celery",
-    metadata={"namespace": APP, "name": "celery"},
-    spec={
-        "selector": {"match_labels": celery_labels},
-        "template": {
-            "metadata": {"labels": celery_labels},
-            "spec": {
-                "image_pull_secrets": pull_secrets,
-                "volumes": [overlay_volume],
-                "containers": [
-                    {
-                        "name": "celery",
-                        "image": image_ref,
-                        "args": ["celery"],
-                        "env_from": env_from,
-                        "volume_mounts": [overlay_mount],
-                        "resources": {"requests": {"memory": "1Gi"}},
-                    }
-                ],
-            },
-        },
-    },
-    opts=pulumi.ResourceOptions(provider=core.doks, depends_on=[bootstrap]),
-)
-
-web_service = k8s.core.v1.Service(
-    "cl-web-service",
-    metadata={"name": "web", "namespace": APP},
-    spec={
-        "selector": web_labels,
-        "ports": [{"name": "http", "port": 80, "target_port": 8000}],
-    },
-    opts=ns_opts,
-)
-
-ingress = k8s.networking.v1.Ingress(
-    "cl-ingress",
-    metadata={
-        "namespace": APP,
-        "annotations": {
-            "cert-manager.io/cluster-issuer": "letsencrypt",
-            "nginx.ingress.kubernetes.io/proxy-body-size": "100m",
-            "nginx.ingress.kubernetes.io/proxy-read-timeout": "180",
-        },
-    },
-    spec={
-        "ingress_class_name": "nginx",
-        "tls": [{"hosts": [DOMAIN], "secret_name": "cl-tls"}],
-        "rules": [
-            {
-                "host": DOMAIN,
-                "http": {
-                    "paths": [
+    bootstrap = k8s.batch.v1.Job(
+        f"{name}-bootstrap",
+        metadata={"namespace": name},
+        spec={
+            "backoff_limit": 1,
+            "ttl_seconds_after_finished": 3600,
+            "template": {
+                "spec": {
+                    "restart_policy": "Never",
+                    "image_pull_secrets": pull_secrets,
+                    "volumes": [overlay_volume],
+                    "containers": [
                         {
-                            "path": "/",
-                            "path_type": "Prefix",
-                            "backend": {
-                                "service": {"name": "web", "port": {"number": 80}}
+                            "name": "bootstrap",
+                            "image": image_ref,
+                            "command": ["/bin/sh", "/opt/flp-dev/bootstrap.sh"],
+                            "env_from": env_from,
+                            "volume_mounts": [overlay_mount],
+                        }
+                    ],
+                },
+            },
+        },
+        opts=pulumi.ResourceOptions(
+            provider=core.doks,
+            depends_on=[
+                namespace,
+                image,
+                app_env,
+                overlay,
+                redis_service,
+                es_service,
+                elasticsearch,
+            ],
+            custom_timeouts=pulumi.CustomTimeouts(create="30m"),
+        ),
+    )
+
+    # --- Web and celery ----------------------------------------------------
+
+    web_labels = {"app": "web"}
+    k8s.apps.v1.Deployment(
+        f"{name}-web",
+        metadata={"namespace": name, "name": "web"},
+        spec={
+            "selector": {"match_labels": web_labels},
+            "template": {
+                "metadata": {"labels": web_labels},
+                "spec": {
+                    "image_pull_secrets": pull_secrets,
+                    "volumes": [overlay_volume],
+                    "containers": [
+                        {
+                            "name": "web",
+                            "image": image_ref,
+                            "args": ["web-prod"],
+                            "ports": [{"container_port": 8000}],
+                            "env_from": env_from,
+                            "volume_mounts": [overlay_mount],
+                            "resources": {"requests": {"memory": "1Gi"}},
+                            "liveness_probe": {
+                                "tcp_socket": {"port": 8000},
+                                "period_seconds": 30,
+                            },
+                            "readiness_probe": {
+                                "tcp_socket": {"port": 8000},
+                                "period_seconds": 10,
                             },
                         }
                     ],
                 },
-            }
-        ],
-    },
-    opts=pulumi.ResourceOptions(
-        provider=core.doks,
-        depends_on=[web_service, core.ingress, core.cluster_issuer],
-    ),
-)
+            },
+        },
+        opts=pulumi.ResourceOptions(provider=core.doks, depends_on=[bootstrap]),
+    )
+    celery_labels = {"app": "celery"}
+    k8s.apps.v1.Deployment(
+        f"{name}-celery",
+        metadata={"namespace": name, "name": "celery"},
+        spec={
+            "selector": {"match_labels": celery_labels},
+            "template": {
+                "metadata": {"labels": celery_labels},
+                "spec": {
+                    "image_pull_secrets": pull_secrets,
+                    "volumes": [overlay_volume],
+                    "containers": [
+                        {
+                            "name": "celery",
+                            "image": image_ref,
+                            "args": ["celery"],
+                            "env_from": env_from,
+                            "volume_mounts": [overlay_mount],
+                            "resources": {"requests": {"memory": "1Gi"}},
+                        }
+                    ],
+                },
+            },
+        },
+        opts=pulumi.ResourceOptions(provider=core.doks, depends_on=[bootstrap]),
+    )
+    web_service = k8s.core.v1.Service(
+        f"{name}-web-service",
+        metadata={"name": "web", "namespace": name},
+        spec={
+            "selector": web_labels,
+            "ports": [{"name": "http", "port": 80, "target_port": 8000}],
+        },
+        opts=ns_opts,
+    )
 
-domain = subdomain("cl", DOMAIN, core.lb_ip)
+    # --- Ingress and DNS ---------------------------------------------------
 
-PROJECT_URNS = [
-    domain.domain_urn,
-    public_bucket.bucket_urn,
-    private_bucket.bucket_urn,
-]
+    k8s.networking.v1.Ingress(
+        f"{name}-ingress",
+        metadata={
+            "namespace": name,
+            "annotations": {
+                "cert-manager.io/cluster-issuer": "letsencrypt",
+                "nginx.ingress.kubernetes.io/proxy-body-size": "100m",
+                "nginx.ingress.kubernetes.io/proxy-read-timeout": "180",
+            },
+        },
+        spec={
+            "ingress_class_name": "nginx",
+            "tls": [
+                {"hosts": [h], "secret_name": f"tls-{h.replace('.', '-')}"}
+                for h in hosts
+            ],
+            "rules": [
+                {
+                    "host": h,
+                    "http": {
+                        "paths": [
+                            {
+                                "path": "/",
+                                "path_type": "Prefix",
+                                "backend": {
+                                    "service": {"name": "web", "port": {"number": 80}}
+                                },
+                            }
+                        ],
+                    },
+                }
+                for h in hosts
+            ],
+        },
+        opts=pulumi.ResourceOptions(
+            provider=core.doks,
+            depends_on=[web_service, core.ingress, core.cluster_issuer],
+        ),
+    )
+
+    # The slug's own hostname resolves through the shared wildcard zone;
+    # aliases outside it get their own DO Domain.
+    project_urns = [public_bucket.bucket_urn, private_bucket.bucket_urn]
+    for alias in spec.aliases:
+        domain = subdomain(f"{name}-alias-{alias.replace('.', '-')}", alias, core.lb_ip)
+        project_urns.append(domain.domain_urn)
+
+    return CourtListener(
+        slug=slug, host=host, namespace=name, project_urns=project_urns
+    )

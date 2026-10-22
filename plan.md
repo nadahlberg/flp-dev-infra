@@ -156,8 +156,164 @@ check from `ci` must pass.
 - [ ] 5. Smoke test: sign in at cl.nates.ai, connect Claude Code / Claude.ai
       to cl-mcp.nates.ai, complete OAuth, run a tool; confirm both MCP pods
       take traffic.
-- [ ] 6. Quality of life: doctor microservice, `clone_from_cl` helper,
-      per-branch image tags surfaced as stack outputs, teardown notes.
+- [ ] 6. Quality of life: doctor microservice, teardown notes.
+- [~] 7. Multiple versions side by side from one config file. Full design
+      below. Code complete on branch `multi-deploy-20261022` (mock run
+      passes, checkout.py verified against GitHub); awaiting PR, deploy and
+      verification (step 7 of the order of work).
+
+## Phase 7: multiple versions side by side (DESIGN, in progress)
+
+Status legend for a resumed session: every item below is either `[ ]` (not
+started), `[~]` (partly written, check the branch `multi-deploy-20261022`)
+or `[x]` (done and merged). Update this list as work lands.
+
+### Goal
+
+Deploy any number of CourtListener and MCP versions at once, each from an
+arbitrary git ref (branch, tag or sha), each with a stable slug-based URL,
+by editing one config file and merging a PR. No per-deploy DNS work, no
+app changes, no workflow inputs.
+
+### Decisions already made (with Nathan, 2026-10-22)
+
+- **Hostnames per slug, not path prefixes.** `cl-<slug>.flp-dev.nates.ai`
+  and `mcp-<slug>.flp-dev.nates.ai`. Reasons: CL's compiled JS calls
+  absolute paths (`/api/rest/v4/...`) that no Django setting can prefix;
+  the MCP anchors its OAuth metadata at root `/.well-known/...` and derives
+  every endpoint from `MCP_BASE_URL`. Hostnames need zero app changes.
+- **One DO Domain `flp-dev.nates.ai`** with a wildcard `*` A record (and an
+  apex `@`) pointing at `flp-dev-lb`. Created once; new slugs need no DNS.
+  TLS stays per-host via cert-manager HTTP-01, exactly as today (no wildcard
+  cert, no DNS-01 needed).
+- **The common unit is a git ref.** A sha pins exactly (it must be the full
+  40 characters; GitHub refuses to fetch an abbreviated one), a branch floats
+  and redeploys when it moves. Image tag = resolved short sha, so two slugs on
+  the same sha share one image, and an unchanged sha does not rebuild.
+- **Per slug: own namespace, own logical DB on the shared `flp-dev-db`, own
+  Redis, own Elasticsearch, own Spaces bucket.** Shared ES was rejected: it
+  would couple bootstrap ordering across slugs; dev data is disposable.
+- **Same bootstrap for every slug, parameterized**: migrations, users and
+  OAuth app registration always; sample data and indexing are per-slug
+  toggles; a per-slug list of extra shell commands for later.
+- **No privileged "main" deploy.** `main` is just a slug.
+- **Old hostnames**: `cl.nates.ai` stays as an alias of `cl-main`.
+  `cl-mcp.nates.ai` is dropped: an MCP can only advertise one base URL in
+  its OAuth metadata, and a half-working alias is a trap. Connect clients to
+  `mcp-main.flp-dev.nates.ai`.
+- **Nodes: 3 × s-4vcpu-8gb** (was 2). Four deploys request ~9.5 GiB and the
+  migration briefly runs old and new namespaces together (Pulumi creates
+  before it deletes). Can drop back to 2 later via config `nodeCount`.
+- **Migration cost accepted**: Pulumi tears down the current `courtlistener`
+  and `mcp` namespaces (dev data lost) and recreates them as `cl-main` and
+  `mcp-main`. Core resources keep their names and are untouched.
+
+### First-cut config (what Nathan asked for)
+
+| slug | app | repo / ref | points at |
+|------|-----|------------|-----------|
+| `main` | CL  | freelawproject/courtlistener @ `main` | hands DCR clients to `mcp-main`; alias `cl.nates.ai` |
+| `dcr`  | CL  | freelawproject/courtlistener @ `8154-forward-dcr-clients-to-mcp-20261015` (PR #8178) | hands DCR clients to `mcp-dcr` |
+| `main` | MCP | freelawproject/courtlistener-api-client @ `main` | authenticates against `cl-main` |
+| `dcr`  | MCP | freelawproject/courtlistener-api-client @ `main` | authenticates against `cl-dcr` |
+
+### Files and what each does
+
+- [x] `infra/deploys.py` — THE config. Two dicts keyed by slug:
+  `COURTLISTENER: dict[str, CourtListenerDeploy]` and
+  `MCP: dict[str, McpDeploy]` (frozen dataclasses), plus `ZONE =
+  "flp-dev.nates.ai"`, `cl_host(slug)`, `mcp_host(slug)`, `sources()`
+  (unique `(repo, ref)` pairs) and `validate()` (every `McpDeploy.courtlistener`
+  and `CourtListenerDeploy.mcp` must name an existing slug).
+  - `CourtListenerDeploy(ref, repo=..., mcp=None, aliases=(), env={},
+    seed_dev_data=True, index_search=True, test_users=3, bootstrap_extra=())`
+  - `McpDeploy(ref, courtlistener, repo=..., replicas=2, aliases=(), env={})`
+  - `env` is a dict of raw environment overrides merged last into the app's
+    Secret, so a slug can point anywhere (e.g. a different issuer).
+- [x] `infra/checkout.py` — stdlib-only script, run before Pulumi in CI and
+  locally. For each unique `(repo, ref)`: `git init`, `git fetch --depth 1
+  origin <ref>` (works for branch, tag or sha on GitHub), checkout
+  `FETCH_HEAD`, record the sha. Writes `<SOURCES_DIR>/manifest.json`:
+  `{"<repo>@<ref>": {"path": ..., "sha": ...}}`. `--dir` / `SOURCES_DIR`
+  default `../sources` (relative to `infra/`). Uses `GH_TOKEN` for the
+  clone URL when set (public repos work without).
+- [x] `infra/core/sources.py` — reads the manifest (`SOURCES_MANIFEST` env,
+  default `../sources/manifest.json`) and returns `Source(path, sha)` for a
+  `(repo, ref)`; raises a clear error telling you to run `checkout.py`.
+- [x] `infra/core/dns.py` — keep `subdomain()` (used for aliases); add
+  `zone(resource_name, name, ip)` creating the Domain plus `@` and `*` A
+  records. Returns the Domain (its `domain_urn` goes to the DO project).
+- [x] `infra/core/__init__.py` — `node_count` default 3; create the shared
+  zone `flp-dev-zone` after `lb_ip`. Everything else unchanged, names
+  unchanged (`project`, `flp-dev-db`, `flp-dev-k8s`, `flp-dev-db-firewall`,
+  `doks`, `flp-dev-ingress`, `flp-dev-cert-manager`,
+  `flp-dev-cluster-issuer`, `ingress-controller`).
+- [x] `infra/core/images.py` — unchanged API; `__main__` keeps a dict cache
+  keyed by `(image name, sha)` so same-sha slugs share one `docker_build.Image`.
+- [x] `infra/courtlistener/__init__.py` → `deploy(slug, spec, image_ref,
+  image, oauth_clients) -> CourtListener` dataclass (`host`, `namespace`,
+  `project_urns`). Resource names `cl-<slug>-*`, namespace `cl-<slug>`, DB
+  `cl_<slug>`, bucket resources `cl-<slug>-storage`/`-private-storage`.
+  `ALLOWED_HOSTS` = host + aliases; CORS origin per host; Ingress hosts =
+  host + aliases with one TLS entry each; alias DNS via `subdomain()`.
+  `OAUTH2_MCP_URL` = `https://mcp_host(spec.mcp)` when `spec.mcp` is set.
+  Env Secret gets `MCP_OAUTH_CLIENTS` (JSON list of `{name, client_id,
+  client_secret, redirect_uri}`), `SEED_DEV_DATA`, `INDEX_SEARCH`,
+  `TEST_USER_COUNT`, then `spec.env` merged last. ConfigMap also carries
+  `extra.sh` built from `spec.bootstrap_extra`.
+- [x] `infra/courtlistener/seed.py` — register every entry of
+  `MCP_OAUTH_CLIENTS` (update_or_create by client_id). Everything else as is.
+- [x] `infra/courtlistener/bootstrap.sh` — gate `make_dev_data` on
+  `SEED_DEV_DATA`, the ES steps on `INDEX_SEARCH`, then `sh /opt/flp-dev/extra.sh`.
+- [x] `infra/mcp/__init__.py` → `deploy(slug, spec, image_ref, image,
+  courtlistener_host, client_id, client_secret) -> Mcp` dataclass. Names
+  `mcp-<slug>-*`, namespace `mcp-<slug>`, DB `mcp_<slug>`.
+  `MCP_BASE_URL=https://mcp_host(slug)`, `COURTLISTENER_OAUTH_ISSUER` and
+  `COURTLISTENER_API_BASE_URL` from `courtlistener_host`, `spec.env` last.
+- [x] `infra/__main__.py` — `validate()`; load sources; build the image
+  cache; generate one `(client_id, client_secret)` RandomPassword pair per
+  MCP slug named `oauth-<mcp slug>-<cl slug>`; deploy every CL slug with
+  the clients of the MCP slugs that point at it; deploy every MCP slug;
+  assemble `ProjectResources`; export `<app>_<slug>_url` and `_sha`.
+- [x] `.github/workflows/ci.yml` / `deploy.yml` — drop the per-repo
+  checkouts and all `inputs`/`vars.CL_REF`-style env; add a step
+  `uv run --project infra python infra/checkout.py --dir
+  "$GITHUB_WORKSPACE/sources"` (env `GH_TOKEN`), then Pulumi with
+  `SOURCES_MANIFEST=${{ github.workspace }}/sources/manifest.json`. Drop
+  `CL_CONTEXT`, `MCP_CONTEXT`, `*_IMAGE_TAG`. Keep the merged-PR trigger and
+  plain `workflow_dispatch`.
+- [x] `.gitignore` add `sources/`; `.env.example` drop the context/tag vars.
+- [x] `README.md` / this file: "add a deploy = add a slug to deploys.py and
+  merge"; hostname scheme; how to pin a sha; how to remove a slug.
+- [x] Mock run (scratchpad `mock_run.py`) needs `SOURCES_MANIFEST` pointing
+  at a fake manifest whose paths are the local sibling checkouts.
+
+### Order of work and checkpoints
+
+1. deploys.py + checkout.py (run checkout locally to prove the fetch works
+   for a branch name and for a sha).
+2. core changes (zone, node count, sources loader).
+3. CL factory + seed/bootstrap changes; MCP factory.
+4. `__main__` wiring; ruff; mock run passes.
+5. Workflows, docs, gitignore.
+6. PR → preview must pass → merge → deploy (expect ~20 min: node added,
+   two CL images if shas differ, old namespaces deleted at the end).
+7. Verify: four namespaces, `cl-main`/`cl-dcr` homepage+search 200,
+   `mcp-main`/`mcp-dcr` `/health` 200 with `oauth_client: true`, OIDC
+   discovery on each CL host, OAuth metadata on each MCP host naming its
+   own host, `cl.nates.ai` alias serving `cl-main`.
+
+### Known traps (learned the hard way today)
+
+- GitHub delivered push events up to 38 min late today; deploy triggers on
+  the merged-PR event. An unexpected deploy run of an older commit means a
+  late replay; re-dispatch `deploy` on main afterwards.
+- Never cancel a running `pulumi up`; let it fail and re-run.
+- The overlay's ES host check must handle a list (`ELASTICSEARCH_DSL_HOST`
+  is list-cast by django-environ).
+- `collectstatic` before `migrate`; keep the `s3` cache alias.
+- Pulumi Jobs are replaced (not re-run) only when their spec changes; the
+  sha-tagged image changes the spec whenever the ref moved.
 
 ## Risks and open questions
 

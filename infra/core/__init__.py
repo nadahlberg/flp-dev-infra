@@ -1,20 +1,23 @@
-"""Shared resources: the DO project, cluster, database, ingress and TLS.
+"""Shared resources: the DO project, cluster, database, ingress, TLS and the
+DNS zone every slug lives under.
 
-Everything here is created once and pointed at by the app modules
-(`courtlistener`, `mcp`), which never create their own cluster, load
-balancer or database cluster.
+Everything here is created once and pointed at by the per-slug deploys,
+which never create their own cluster, load balancer or database cluster.
+Resource names here are load-bearing: renaming one makes Pulumi replace it.
 """
 
 import pulumi
 import pulumi_digitalocean as do
 import pulumi_kubernetes as k8s
 
+from core.dns import zone
 from core.project import project_args
+from deploys import ZONE
 
 config = pulumi.Config()
 region = config.get("region") or "nyc3"
 node_size = config.get("nodeSize") or "s-4vcpu-8gb"
-node_count = config.get_int("nodeCount") or 2
+node_count = config.get_int("nodeCount") or 3
 
 PROJECT_NAME = "flp-dev"
 ACME_EMAIL = "nadahlberg@gmail.com"
@@ -124,10 +127,15 @@ ingress_controller_service = k8s.core.v1.Service.get(
     opts=pulumi.ResourceOptions(provider=doks),
 )
 
-# Public IP of flp-dev-lb; the app modules point their subdomains at it.
+# Public IP of flp-dev-lb; every hostname points at it.
 lb_ip = ingress_controller_service.status.load_balancer.ingress[0].ip
+
+# flp-dev.nates.ai with a wildcard: every slug's hostname resolves with no
+# DNS work per deploy.
+shared_zone = zone("flp-dev-zone", ZONE, lb_ip)
 
 PROJECT_URNS = [
     postgres.cluster_urn,
     cluster.cluster_urn,
+    shared_zone.domain_urn,
 ]
