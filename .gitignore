@@ -14,3 +14,6 @@ Pulumi.*.yaml
 
 .DS_Store
 local/
+
+# app checkouts made by infra/checkout.py
+sources/

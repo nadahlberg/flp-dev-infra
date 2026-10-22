@@ -3,24 +3,13 @@ name: deploy
 on:
   # Every change to main arrives through a merged PR (the ruleset forbids
   # direct pushes), and PR events have proven far more reliable than push
-  # events for merge commits, which GitHub sometimes never records.
+  # events for merge commits, which GitHub sometimes delivers very late.
   pull_request:
     types: [closed]
     branches: [main]
+  # Re-run the current main by hand (for example after a late replay of an
+  # older commit, or to pick up a moved branch ref without a config change).
   workflow_dispatch:
-    inputs:
-      cl_repo:
-        description: CourtListener repo to build (owner/name)
-        required: false
-      cl_ref:
-        description: CourtListener branch, tag or sha
-        required: false
-      mcp_repo:
-        description: MCP (courtlistener-api-client) repo to build (owner/name)
-        required: false
-      mcp_ref:
-        description: MCP branch, tag or sha
-        required: false
 
 concurrency:
   group: deploy
@@ -34,27 +23,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.cl_repo || vars.CL_REPO || 'freelawproject/courtlistener' }}
-          ref: ${{ inputs.cl_ref || vars.CL_REF || 'main' }}
-          path: cl-src
-          token: ${{ secrets.GH_TOKEN }}
-
-      - uses: actions/checkout@v7
-        with:
-          repository: ${{ inputs.mcp_repo || vars.MCP_REPO || 'freelawproject/courtlistener-api-client' }}
-          ref: ${{ inputs.mcp_ref || vars.MCP_REF || 'main' }}
-          path: mcp-src
-          token: ${{ secrets.GH_TOKEN }}
-
-      - name: Resolve image tags
-        run: |
-          echo "CL_IMAGE_TAG=$(git -C cl-src rev-parse --short HEAD)-${{ github.run_number }}" >> "$GITHUB_ENV"
-          echo "MCP_IMAGE_TAG=$(git -C mcp-src rev-parse --short HEAD)-${{ github.run_number }}" >> "$GITHUB_ENV"
-          echo "Deploying CourtListener $(git -C cl-src rev-parse HEAD) and MCP $(git -C mcp-src rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
-
       - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Fetch the app sources named in infra/deploys.py
+        run: |
+          uv run --project infra python infra/checkout.py --dir "$GITHUB_WORKSPACE/sources"
+          echo '### Sources' >> "$GITHUB_STEP_SUMMARY"
+          python3 -c "import json; [print(f'- {k}: {v[\"sha\"]}') for k, v in json.load(open('sources/manifest.json')).items()]" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - uses: pulumi/actions@v7
         with:
@@ -66,8 +43,7 @@ jobs:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          CL_CONTEXT: ../cl-src
-          MCP_CONTEXT: ../mcp-src
+          SOURCES_MANIFEST: ${{ github.workspace }}/sources/manifest.json
           DEV_USER_NAME: ${{ vars.DEV_USER_NAME || 'dev' }}
           DEV_USER_EMAIL: ${{ secrets.DEV_USER_EMAIL }}
           DEV_USER_PASSWORD: ${{ secrets.DEV_USER_PASSWORD }}
