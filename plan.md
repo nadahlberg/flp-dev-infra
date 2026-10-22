@@ -106,7 +106,8 @@ infra/                       the Pulumi program (Python, uv); stack `dev`
 
 ## Deploying
 
-Merging to `main` runs `ci` (`pulumi preview`) then `deploy` (`pulumi up`).
+PRs get a `pulumi preview` from `ci`; merging to `main` runs `deploy`
+(`pulumi up`) directly on the push.
 `deploy` can also be dispatched by hand with inputs for which repo and ref
 to build each app from, so an in-progress branch (or a fork) can be deployed
 without touching this repo. The defaults come from repository variables

@@ -20,9 +20,10 @@ MCP clients. Managed with Pulumi; deployed from GitHub Actions. See
     buckets, the settings overlay and bootstrap/seed scripts, the bootstrap
     Job, web + celery, ingress, DNS.
   - `mcp/` — the MCP namespace: redis, the server (2+ replicas), ingress, DNS.
-- `.github/workflows/ci.yml` — `pulumi preview` on every PR and push to main.
-- `.github/workflows/deploy.yml` — `pulumi up` after ci succeeds on main, or
-  by hand with a choice of app repo/ref.
+- `.github/workflows/ci.yml` — `pulumi preview` on every PR (the `preview`
+  check the ruleset requires).
+- `.github/workflows/deploy.yml` — `pulumi up` on every push to main, or by
+  hand with a choice of app repo/ref.
 
 ## Conventions
 
