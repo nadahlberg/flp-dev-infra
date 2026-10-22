@@ -22,7 +22,7 @@ import pulumi_tls as tls
 import core
 from core.dns import subdomain
 from core.images import pull_secret
-from deploys import CourtListenerDeploy, cl_host, mcp_host
+from deploys import LEGACY_ALIAS_RESOURCES, CourtListenerDeploy, cl_host, mcp_host
 
 HERE = Path(__file__).parent
 
@@ -504,7 +504,12 @@ def deploy(
     # aliases outside it get their own DO Domain.
     project_urns = [public_bucket.bucket_urn, private_bucket.bucket_urn]
     for alias in spec.aliases:
-        domain = subdomain(f"{name}-alias-{alias.replace('.', '-')}", alias, core.lb_ip)
+        domain = subdomain(
+            f"{name}-alias-{alias.replace('.', '-')}",
+            alias,
+            core.lb_ip,
+            legacy_name=LEGACY_ALIAS_RESOURCES.get(alias),
+        )
         project_urns.append(domain.domain_urn)
 
     return CourtListener(

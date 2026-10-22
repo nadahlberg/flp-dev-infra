@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 
 ZONE = "flp-dev.nates.ai"
 
+# Alias hostnames that existed before the slug scheme, keyed by the Pulumi
+# resource prefix they were created under, so Pulumi adopts the existing DO
+# Domain instead of trying to create it a second time.
+LEGACY_ALIAS_RESOURCES = {"cl.nates.ai": "cl"}
+
 CL_REPO = "freelawproject/courtlistener"
 MCP_REPO = "freelawproject/courtlistener-api-client"
 
