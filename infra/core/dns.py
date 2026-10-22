@@ -27,9 +27,26 @@ def zone(resource_name: str, name: str, ip: pulumi.Input[str]) -> do.Domain:
     return domain
 
 
-def subdomain(resource_name: str, host: str, ip: pulumi.Input[str]) -> do.Domain:
-    """A DO Domain for a single host (used for aliases outside the zone)."""
-    domain = do.Domain(f"{resource_name}-domain", name=host)
+def subdomain(
+    resource_name: str,
+    host: str,
+    ip: pulumi.Input[str],
+    legacy_name: str | None = None,
+) -> do.Domain:
+    """A DO Domain for a single host (used for aliases outside the zone).
+
+    legacy_name: the resource prefix this host was created under before a
+    rename; Pulumi then treats the new names as the same resources.
+    """
+    domain_opts = record_opts = None
+    if legacy_name:
+        domain_opts = pulumi.ResourceOptions(
+            aliases=[pulumi.Alias(name=f"{legacy_name}-domain")]
+        )
+        record_opts = pulumi.ResourceOptions(
+            aliases=[pulumi.Alias(name=f"{legacy_name}-dns")]
+        )
+    domain = do.Domain(f"{resource_name}-domain", name=host, opts=domain_opts)
     do.DnsRecord(
         f"{resource_name}-dns",
         domain=domain.id,
@@ -37,5 +54,6 @@ def subdomain(resource_name: str, host: str, ip: pulumi.Input[str]) -> do.Domain
         name="@",
         value=ip,
         ttl=300,
+        opts=record_opts,
     )
     return domain
