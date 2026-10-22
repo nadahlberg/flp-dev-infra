@@ -48,7 +48,15 @@ def fetch(repo: str, ref: str, base: Path) -> dict[str, str]:
         _run(["git", "remote", "add", "origin", _clone_url(repo)], dest)
     else:
         _run(["git", "remote", "set-url", "origin", _clone_url(repo)], dest)
-    _run(["git", "fetch", "-q", "--depth", "1", "origin", ref], dest)
+    try:
+        _run(["git", "fetch", "-q", "--depth", "1", "origin", ref], dest)
+    except subprocess.CalledProcessError as exc:
+        hint = ""
+        if all(c in "0123456789abcdef" for c in ref) and len(ref) < 40:
+            hint = " (a sha must be the full 40 characters; GitHub cannot fetch an abbreviated one)"
+        raise SystemExit(
+            f"could not fetch {repo} @ {ref}{hint}:\n{exc.stderr}"
+        ) from exc
     _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], dest)
     sha = _run(["git", "rev-parse", "HEAD"], dest)
     return {"path": str(dest.resolve()), "sha": sha}

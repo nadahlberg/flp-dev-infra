@@ -158,7 +158,9 @@ check from `ci` must pass.
       take traffic.
 - [ ] 6. Quality of life: doctor microservice, teardown notes.
 - [~] 7. Multiple versions side by side from one config file. Full design
-      below; branch `multi-deploy-20261022`.
+      below. Code complete on branch `multi-deploy-20261022` (mock run
+      passes, checkout.py verified against GitHub); awaiting PR, deploy and
+      verification (step 7 of the order of work).
 
 ## Phase 7: multiple versions side by side (DESIGN, in progress)
 
@@ -184,8 +186,9 @@ app changes, no workflow inputs.
   apex `@`) pointing at `flp-dev-lb`. Created once; new slugs need no DNS.
   TLS stays per-host via cert-manager HTTP-01, exactly as today (no wildcard
   cert, no DNS-01 needed).
-- **The common unit is a git ref.** A sha pins exactly, a branch floats and
-  redeploys when it moves. Image tag = resolved short sha, so two slugs on
+- **The common unit is a git ref.** A sha pins exactly (it must be the full
+  40 characters; GitHub refuses to fetch an abbreviated one), a branch floats
+  and redeploys when it moves. Image tag = resolved short sha, so two slugs on
   the same sha share one image, and an unchanged sha does not rebuild.
 - **Per slug: own namespace, own logical DB on the shared `flp-dev-db`, own
   Redis, own Elasticsearch, own Spaces bucket.** Shared ES was rejected: it
@@ -216,7 +219,7 @@ app changes, no workflow inputs.
 
 ### Files and what each does
 
-- [ ] `infra/deploys.py` — THE config. Two dicts keyed by slug:
+- [x] `infra/deploys.py` — THE config. Two dicts keyed by slug:
   `COURTLISTENER: dict[str, CourtListenerDeploy]` and
   `MCP: dict[str, McpDeploy]` (frozen dataclasses), plus `ZONE =
   "flp-dev.nates.ai"`, `cl_host(slug)`, `mcp_host(slug)`, `sources()`
@@ -227,27 +230,27 @@ app changes, no workflow inputs.
   - `McpDeploy(ref, courtlistener, repo=..., replicas=2, aliases=(), env={})`
   - `env` is a dict of raw environment overrides merged last into the app's
     Secret, so a slug can point anywhere (e.g. a different issuer).
-- [ ] `infra/checkout.py` — stdlib-only script, run before Pulumi in CI and
+- [x] `infra/checkout.py` — stdlib-only script, run before Pulumi in CI and
   locally. For each unique `(repo, ref)`: `git init`, `git fetch --depth 1
   origin <ref>` (works for branch, tag or sha on GitHub), checkout
   `FETCH_HEAD`, record the sha. Writes `<SOURCES_DIR>/manifest.json`:
   `{"<repo>@<ref>": {"path": ..., "sha": ...}}`. `--dir` / `SOURCES_DIR`
   default `../sources` (relative to `infra/`). Uses `GH_TOKEN` for the
   clone URL when set (public repos work without).
-- [ ] `infra/core/sources.py` — reads the manifest (`SOURCES_MANIFEST` env,
+- [x] `infra/core/sources.py` — reads the manifest (`SOURCES_MANIFEST` env,
   default `../sources/manifest.json`) and returns `Source(path, sha)` for a
   `(repo, ref)`; raises a clear error telling you to run `checkout.py`.
-- [ ] `infra/core/dns.py` — keep `subdomain()` (used for aliases); add
+- [x] `infra/core/dns.py` — keep `subdomain()` (used for aliases); add
   `zone(resource_name, name, ip)` creating the Domain plus `@` and `*` A
   records. Returns the Domain (its `domain_urn` goes to the DO project).
-- [ ] `infra/core/__init__.py` — `node_count` default 3; create the shared
+- [x] `infra/core/__init__.py` — `node_count` default 3; create the shared
   zone `flp-dev-zone` after `lb_ip`. Everything else unchanged, names
   unchanged (`project`, `flp-dev-db`, `flp-dev-k8s`, `flp-dev-db-firewall`,
   `doks`, `flp-dev-ingress`, `flp-dev-cert-manager`,
   `flp-dev-cluster-issuer`, `ingress-controller`).
-- [ ] `infra/core/images.py` — unchanged API; `__main__` keeps a dict cache
+- [x] `infra/core/images.py` — unchanged API; `__main__` keeps a dict cache
   keyed by `(image name, sha)` so same-sha slugs share one `docker_build.Image`.
-- [ ] `infra/courtlistener/__init__.py` → `deploy(slug, spec, image_ref,
+- [x] `infra/courtlistener/__init__.py` → `deploy(slug, spec, image_ref,
   image, oauth_clients) -> CourtListener` dataclass (`host`, `namespace`,
   `project_urns`). Resource names `cl-<slug>-*`, namespace `cl-<slug>`, DB
   `cl_<slug>`, bucket resources `cl-<slug>-storage`/`-private-storage`.
@@ -258,31 +261,31 @@ app changes, no workflow inputs.
   client_secret, redirect_uri}`), `SEED_DEV_DATA`, `INDEX_SEARCH`,
   `TEST_USER_COUNT`, then `spec.env` merged last. ConfigMap also carries
   `extra.sh` built from `spec.bootstrap_extra`.
-- [ ] `infra/courtlistener/seed.py` — register every entry of
+- [x] `infra/courtlistener/seed.py` — register every entry of
   `MCP_OAUTH_CLIENTS` (update_or_create by client_id). Everything else as is.
-- [ ] `infra/courtlistener/bootstrap.sh` — gate `make_dev_data` on
+- [x] `infra/courtlistener/bootstrap.sh` — gate `make_dev_data` on
   `SEED_DEV_DATA`, the ES steps on `INDEX_SEARCH`, then `sh /opt/flp-dev/extra.sh`.
-- [ ] `infra/mcp/__init__.py` → `deploy(slug, spec, image_ref, image,
+- [x] `infra/mcp/__init__.py` → `deploy(slug, spec, image_ref, image,
   courtlistener_host, client_id, client_secret) -> Mcp` dataclass. Names
   `mcp-<slug>-*`, namespace `mcp-<slug>`, DB `mcp_<slug>`.
   `MCP_BASE_URL=https://mcp_host(slug)`, `COURTLISTENER_OAUTH_ISSUER` and
   `COURTLISTENER_API_BASE_URL` from `courtlistener_host`, `spec.env` last.
-- [ ] `infra/__main__.py` — `validate()`; load sources; build the image
+- [x] `infra/__main__.py` — `validate()`; load sources; build the image
   cache; generate one `(client_id, client_secret)` RandomPassword pair per
   MCP slug named `oauth-<mcp slug>-<cl slug>`; deploy every CL slug with
   the clients of the MCP slugs that point at it; deploy every MCP slug;
   assemble `ProjectResources`; export `<app>_<slug>_url` and `_sha`.
-- [ ] `.github/workflows/ci.yml` / `deploy.yml` — drop the per-repo
+- [x] `.github/workflows/ci.yml` / `deploy.yml` — drop the per-repo
   checkouts and all `inputs`/`vars.CL_REF`-style env; add a step
   `uv run --project infra python infra/checkout.py --dir
   "$GITHUB_WORKSPACE/sources"` (env `GH_TOKEN`), then Pulumi with
   `SOURCES_MANIFEST=${{ github.workspace }}/sources/manifest.json`. Drop
   `CL_CONTEXT`, `MCP_CONTEXT`, `*_IMAGE_TAG`. Keep the merged-PR trigger and
   plain `workflow_dispatch`.
-- [ ] `.gitignore` add `sources/`; `.env.example` drop the context/tag vars.
-- [ ] `README.md` / this file: "add a deploy = add a slug to deploys.py and
+- [x] `.gitignore` add `sources/`; `.env.example` drop the context/tag vars.
+- [x] `README.md` / this file: "add a deploy = add a slug to deploys.py and
   merge"; hostname scheme; how to pin a sha; how to remove a slug.
-- [ ] Mock run (scratchpad `mock_run.py`) needs `SOURCES_MANIFEST` pointing
+- [x] Mock run (scratchpad `mock_run.py`) needs `SOURCES_MANIFEST` pointing
   at a fake manifest whose paths are the local sibling checkouts.
 
 ### Order of work and checkpoints

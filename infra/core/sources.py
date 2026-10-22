@@ -9,9 +9,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-MANIFEST = Path(
-    os.getenv("SOURCES_MANIFEST", "../sources/manifest.json")
-).resolve()
+MANIFEST = Path(os.getenv("SOURCES_MANIFEST", "../sources/manifest.json")).resolve()
 
 
 @dataclass(frozen=True)

@@ -93,7 +93,9 @@ for mcp_slug, mcp_spec in deploys.MCP.items():
     project_urns += deployed.project_urns
     pulumi.export(f"mcp_{mcp_slug}_url", f"https://{deployed.host}")
     pulumi.export(f"mcp_{mcp_slug}_sha", src.sha)
-    pulumi.export(f"mcp_{mcp_slug}_courtlistener", cl_deploys[mcp_spec.courtlistener].host)
+    pulumi.export(
+        f"mcp_{mcp_slug}_courtlistener", cl_deploys[mcp_spec.courtlistener].host
+    )
 
 for cl_slug, deployed in cl_deploys.items():
     pulumi.export(f"courtlistener_{cl_slug}_url", f"https://{deployed.host}")
