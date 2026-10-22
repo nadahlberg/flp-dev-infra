@@ -4,12 +4,16 @@
 set -eu
 cd /opt/courtlistener
 
+# collectstatic first: migrate runs Django's system checks, which import the
+# URL conf, which resolves static() URLs through the manifest storage. That
+# needs the manifest and files to already be in the bucket. collectstatic
+# itself runs no system checks.
+echo "==> collectstatic (to Spaces)"
+./manage.py collectstatic --noinput
+
 echo "==> migrate"
 ./manage.py migrate --noinput
 ./manage.py createcachetable
-
-echo "==> collectstatic (to Spaces)"
-./manage.py collectstatic --noinput --clear
 
 echo "==> seed users, the MCP OAuth application, and sample data"
 python /opt/flp-dev/seed.py
