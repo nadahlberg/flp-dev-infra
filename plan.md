@@ -157,10 +157,12 @@ check from `ci` must pass.
       to cl-mcp.nates.ai, complete OAuth, run a tool; confirm both MCP pods
       take traffic.
 - [ ] 6. Quality of life: doctor microservice, teardown notes.
-- [~] 7. Multiple versions side by side from one config file. Full design
-      below. Code complete on branch `multi-deploy-20261022` (mock run
-      passes, checkout.py verified against GitHub); awaiting PR, deploy and
-      verification (step 7 of the order of work).
+- [x] 7. Multiple versions side by side from one config file (2026-10-22).
+      Deployed and verified: cl-main, cl-dcr, mcp-main, mcp-dcr all serve;
+      `cl.nates.ai` aliases cl-main. Two migration fixes: adopt the old
+      `cl.nates.ai` Domain by Pulumi alias (#8); empty the old Spaces
+      buckets by hand (Spaces refuses to delete non-empty ones), and set
+      `force_destroy` on buckets so removing a slug never stalls on this.
 
 ## Phase 7: multiple versions side by side (DESIGN, in progress)
 
@@ -314,6 +316,9 @@ app changes, no workflow inputs.
 - `collectstatic` before `migrate`; keep the `s3` cache alias.
 - Pulumi Jobs are replaced (not re-run) only when their spec changes; the
   sha-tagged image changes the spec whenever the ref moved.
+- Spaces buckets must be empty to delete; buckets now carry `force_destroy`.
+  Buckets created before that (if any remain) need emptying by hand with
+  the key from `pulumi stack export`.
 
 ## Risks and open questions
 

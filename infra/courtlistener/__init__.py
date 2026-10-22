@@ -81,10 +81,12 @@ def deploy(
         spaces_access_id=spaces_key.access_key,
         spaces_secret_key=spaces_key.secret_key,
     )
+    # force_destroy: removing a slug must not stall on a non-empty bucket.
     public_bucket = do.SpacesBucket(
         f"{name}-storage",
         region=core.region,
         acl="public-read",
+        force_destroy=True,
         opts=pulumi.ResourceOptions(provider=spaces),
     )
     do.SpacesBucketCorsConfiguration(
@@ -104,6 +106,7 @@ def deploy(
     private_bucket = do.SpacesBucket(
         f"{name}-private-storage",
         region=core.region,
+        force_destroy=True,
         opts=pulumi.ResourceOptions(provider=spaces),
     )
     spaces_endpoint = f"https://{core.region}.digitaloceanspaces.com"
