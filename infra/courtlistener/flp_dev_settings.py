@@ -37,8 +37,14 @@ for _directive, _sources in SECURE_CSP.items():
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 BASE_BACKEND = EMAIL_BACKEND
 
-# Production defines an S3 Express cache that nothing here can reach.
-CACHES.pop("s3", None)
+# Production backs the "s3" cache alias with S3 Express. The URL conf and
+# cl.lib.s3_cache reference the alias by name, so it has to exist; here it
+# is just another Redis database.
+CACHES["s3"] = {
+    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+    "LOCATION": CACHES["default"]["LOCATION"],
+    "OPTIONS": {"db": 4},
+}
 
 # One tester, two small nodes.
 CELERY_WORKER_CONCURRENCY = env.int("CELERY_WORKER_CONCURRENCY", default=2)
