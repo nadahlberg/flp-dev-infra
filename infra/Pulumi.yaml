@@ -1,0 +1,6 @@
+name: flp-dev-infra
+description: Disposable production-shaped CourtListener + MCP deployment for OAuth testing
+runtime:
+  name: python
+  options:
+    toolchain: uv
