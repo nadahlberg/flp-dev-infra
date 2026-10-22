@@ -1,7 +1,11 @@
 name: deploy
 
 on:
-  push:
+  # Every change to main arrives through a merged PR (the ruleset forbids
+  # direct pushes), and PR events have proven far more reliable than push
+  # events for merge commits, which GitHub sometimes never records.
+  pull_request:
+    types: [closed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -23,9 +27,12 @@ concurrency:
 
 jobs:
   infra:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
       - uses: actions/checkout@v7
         with:
