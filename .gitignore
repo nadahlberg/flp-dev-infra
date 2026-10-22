@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+Pulumi.*.yaml
+!Pulumi.yaml
+
+.DS_Store
+local/
