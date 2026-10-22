@@ -149,9 +149,10 @@ check from `ci` must pass.
 - [x] 2. Pulumi program: core (project, cluster, DB, ingress, cert-manager,
       DNS helper, GHCR helpers), CourtListener, MCP.
 - [x] 3. CI/deploy workflows wired to GitHub secrets and variables.
-- [ ] 4. Add `.env` and the GitHub secrets; first `pulumi up`. Expect to
-      iterate on: ES index creation, `collectstatic` against Spaces, the CSP
-      overlay, probe paths, memory requests, DOKS/Postgres version strings.
+- [x] 4. Secrets in place; first successful `pulumi up` (2026-10-22). Took
+      three fixes: `collectstatic` before `migrate`, keep the `s3` cache
+      alias (Redis-backed), strip TLS options from the ES connection for a
+      plain-http single node.
 - [ ] 5. Smoke test: sign in at cl.nates.ai, connect Claude Code / Claude.ai
       to cl-mcp.nates.ai, complete OAuth, run a tool; confirm both MCP pods
       take traffic.

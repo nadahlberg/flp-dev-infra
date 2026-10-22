@@ -10,7 +10,13 @@ else is configured through the environment, exactly as in production.
 import environ
 from cl.settings import *
 from cl.settings import AWS_S3_CUSTOM_DOMAIN as _PRODUCTION_STORAGE_DOMAIN
-from cl.settings import CACHES, DATABASES, REST_FRAMEWORK, SECURE_CSP
+from cl.settings import (
+    CACHES,
+    DATABASES,
+    ELASTICSEARCH_DSL,
+    REST_FRAMEWORK,
+    SECURE_CSP,
+)
 
 env = environ.FileAwareEnv()
 
@@ -31,6 +37,14 @@ _new = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
 for _directive, _sources in SECURE_CSP.items():
     if isinstance(_sources, list):
         SECURE_CSP[_directive] = [_new if s == _old else s for s in _sources]
+
+# CL's ES settings carry the CA cert and verify_certs=False for its
+# self-signed dev container. The client refuses TLS options on a plain
+# http:// host, and the in-cluster single node runs without TLS.
+for _conn in ELASTICSEARCH_DSL.values():
+    if isinstance(_conn, dict) and str(_conn.get("hosts", "")).startswith("http://"):
+        _conn.pop("ca_certs", None)
+        _conn.pop("verify_certs", None)
 
 # No SES here: mail goes to the pod logs. This also covers CL's wrapper
 # backend, which would otherwise hand off to django_ses.
