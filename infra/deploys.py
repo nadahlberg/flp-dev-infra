@@ -79,11 +79,18 @@ COURTLISTENER: dict[str, CourtListenerDeploy] = {
         ref="8154-forward-dcr-clients-to-mcp-20261015",
         mcp="dcr",
     ),
+    # PR #8237: COOP unsafe-none on the pages OAuth popups render, so
+    # popup-based clients (MS Copilot) can finish their flow.
+    "copilot-fix": CourtListenerDeploy(
+        ref="7633-relax-coop-on-oauth-popup-pages-20261023",
+        mcp="copilot-fix",
+    ),
 }
 
 MCP: dict[str, McpDeploy] = {
     "main": McpDeploy(ref="main", courtlistener="main"),
     "dcr": McpDeploy(ref="main", courtlistener="dcr"),
+    "copilot-fix": McpDeploy(ref="main", courtlistener="copilot-fix"),
 }
 
 
