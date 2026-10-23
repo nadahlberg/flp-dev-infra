@@ -82,18 +82,26 @@ COURTLISTENER: dict[str, CourtListenerDeploy] = {
     # plan.md Phase 8, step 1: the era before the MCP became its own
     # authorization server (courtlistener-api-client#357) — this CL is the
     # AS that real clients register with. Upgraded in place in step 2.
+    # Main's first-parent tip of 2026-10-09: a date-picked rev-list sha
+    # turned out to be a feature-branch commit missing the introspection
+    # `sub` field the paired MCP requires (CL#8087).
     "legacy-clients": CourtListenerDeploy(
-        ref="07456f46a15045b834d351279d44948db042dcf8",
+        ref="81528ac6d0956c727795f385ec9c5d314306f1d4",
     ),
 }
 
 MCP: dict[str, McpDeploy] = {
     "main": McpDeploy(ref="main", courtlistener="main"),
     "dcr": McpDeploy(ref="main", courtlistener="dcr"),
-    # plan.md Phase 8, step 1: the commit #357 merged onto.
+    # plan.md Phase 8, step 1: the commit #357 merged onto. PGHOST is
+    # blanked because this era's OAuth store is unused but its probe runs
+    # asyncpg's default pool of ten per worker (the PGPOOL_MAX fix is
+    # newer) and was exhausting the shared Postgres's connection slots.
+    # DROP the override in step 2: the main-ref MCP needs the store.
     "legacy-clients": McpDeploy(
         ref="d0d414efbbd4441dbaa346dd80408a7564ea186d",
         courtlistener="legacy-clients",
+        env={"PGHOST": ""},
     ),
 }
 
