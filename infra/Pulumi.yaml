@@ -1,5 +1,5 @@
 name: flp-dev-infra
-description: Disposable production-shaped CourtListener + MCP deployment for OAuth testing
+description: Dev tunnel - expose local ports at https://<name>.docspace.ai
 runtime:
   name: python
   options:

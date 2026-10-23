@@ -1,0 +1,35 @@
+services:
+  sish:
+    image: antoniomika/sish:v3.0.4
+    restart: unless-stopped
+    command:
+      - --domain=docspace.ai
+      - --ssh-address=:2222
+      - --http-address=:8080
+      - --authentication=true
+      - --authentication-keys-directory=/pubkeys
+      - --private-keys-directory=/keys
+      - --bind-random-subdomains=false
+      - --force-requested-subdomains=true
+      - --idle-connection=false
+      - --proxy-ssl-termination=true
+    ports:
+      - "2222:2222"
+    volumes:
+      - ./pubkeys:/pubkeys
+      - ./keys:/keys
+
+  caddy:
+    build: ./docker/caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DO_DNS_TOKEN: ${DO_DNS_TOKEN}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+volumes:
+  caddy_data:
