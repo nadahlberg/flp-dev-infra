@@ -330,7 +330,9 @@ connected in the era when CourtListener was the authorization server,
 before the MCP became its own AS (courtlistener-api-client#357, merged
 2026-10-10).
 
-- [ ] 1. Deploy the `legacy-clients` slug pinned to the pre-cutover era:
+- [x] 1. Deploy the `legacy-clients` slug pinned to the pre-cutover era
+      (done 2026-10-23; details and confirmed clients in
+      notes/legacy-clients.md):
       CourtListener `81528ac6d` (main's first-parent tip of 2026-10-09,
       CL-as-authorization-server) and MCP `d0d414ef` (the commit #357
       merged onto, introspection era). Nathan then connects real
