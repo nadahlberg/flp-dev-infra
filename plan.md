@@ -345,7 +345,8 @@ before the MCP became its own AS (courtlistener-api-client#357, merged
       and blank `PGHOST` on this MCP era (its unused OAuth-store probe
       runs asyncpg's default pool of ten per worker and exhausts the
       shared Postgres's connection slots).
-- [ ] 2. Repoint the same slug in place — MCP to `main`, CourtListener to
+- [x] 2. (2026-10-23; flag-off testing tracked in notes/legacy-clients.md)
+      Repoint the same slug in place — MCP to `main`, CourtListener to
       `8154-forward-dcr-clients-to-mcp-20261015` (courtlistener#8178) —
       keeping the namespaces and per-slug database, so the registered
       clients and issued tokens survive the upgrade exactly as they would
