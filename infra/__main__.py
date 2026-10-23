@@ -1,119 +1,109 @@
-"""Assemble every slug in deploys.py on top of the shared core."""
+"""One droplet running a dev tunnel: sish behind Caddy.
+
+Anyone listed in the repo's `users` file can expose a local port at
+https://<name>.docspace.ai with a single ssh command. See README.md.
+"""
+
+import os
+from pathlib import Path
 
 import pulumi
 import pulumi_digitalocean as do
-import pulumi_random as random
+import yaml
 
-import core
-import courtlistener
-import deploys
-import mcp
-from core.images import build_image
-from core.sources import source
+DOMAIN = "docspace.ai"  # existing DO zone, dedicated to the tunnel
+ADMIN = "nadahlberg"  # GitHub user whose keys get root on the droplet
+REGION = "nyc3"
 
-deploys.validate()
-
-# One image per (repo, sha), shared by every slug on that sha.
-_images: dict[tuple[str, str], tuple[str, object]] = {}
+REPO = Path(__file__).resolve().parent.parent
 
 
-def image_for(repo: str, ref: str, name: str, dockerfile: str, build_args):
-    """Build (once) the image for `repo` at `ref`; return (ref, resource, source)."""
-    src = source(repo, ref)
-    key = (name, src.sha)
-    if key not in _images:
-        _images[key] = build_image(
-            f"{name}-{src.tag}",
-            name=name,
-            tag=src.tag,
-            context=src.path,
-            dockerfile=f"{src.path}/{dockerfile}",
-            build_args=build_args(src),
-        )
-    image_ref, image = _images[key]
-    return image_ref, image, src
+def repo_file(path: str, mode: str = "0644") -> dict:
+    """A cloud-init write_files entry mirroring a repo file to /opt/tunnel."""
+    return {
+        "path": f"/opt/tunnel/{path}",
+        "content": (REPO / path).read_text(),
+        "permissions": mode,
+    }
 
 
-# One confidential OAuth client per MCP slug, registered at the CL slug it
-# points to. Generated here so both sides read the same values.
-oauth_pairs: dict[str, tuple[random.RandomPassword, random.RandomPassword]] = {}
-for mcp_slug, mcp_spec in deploys.MCP.items():
-    pair_name = f"oauth-{mcp_slug}-{mcp_spec.courtlistener}"
-    oauth_pairs[mcp_slug] = (
-        random.RandomPassword(f"{pair_name}-id", length=40, special=False),
-        random.RandomPassword(f"{pair_name}-secret", length=96, special=False),
-    )
+cloud_config = {
+    "package_update": True,
+    "packages": ["docker.io", "docker-compose-v2", "rsync", "ssh-import-id"],
+    "write_files": [
+        repo_file("docker-compose.yml"),
+        repo_file("docker/caddy/Dockerfile"),
+        repo_file("docker/caddy/Caddyfile"),
+        repo_file("scripts/sync-keys.sh", mode="0755"),
+        {
+            "path": "/opt/tunnel/.env",
+            "content": f"DO_DNS_TOKEN={os.environ['DIGITALOCEAN_TOKEN']}\n",
+            "permissions": "0600",
+        },
+        {
+            "path": "/etc/cron.d/sync-keys",
+            "content": "* * * * * root /opt/tunnel/scripts/sync-keys.sh\n",
+        },
+    ],
+    "runcmd": [
+        f"ssh-import-id gh:{ADMIN}",
+        "/opt/tunnel/scripts/sync-keys.sh",
+        "cd /opt/tunnel && docker compose up --build --detach",
+    ],
+}
 
-project_urns = list(core.PROJECT_URNS)
-cl_deploys: dict[str, courtlistener.CourtListener] = {}
-cl_shas: dict[str, str] = {}
-
-for cl_slug, cl_spec in deploys.COURTLISTENER.items():
-    image_ref, image, src = image_for(
-        cl_spec.repo,
-        cl_spec.ref,
-        "flp-dev-courtlistener",
-        "docker/django/Dockerfile",
-        lambda _src: {"BUILD_ENV": "prod"},
-    )
-    clients = [
-        courtlistener.OAuthClient(
-            name=f"flp-dev MCP server ({mcp_slug})",
-            client_id=oauth_pairs[mcp_slug][0].result,
-            client_secret=oauth_pairs[mcp_slug][1].result,
-            redirect_uri=f"https://{deploys.mcp_host(mcp_slug)}/auth/callback",
-        )
-        for mcp_slug, mcp_spec in deploys.MCP.items()
-        if mcp_spec.courtlistener == cl_slug
-    ]
-    cl_deploys[cl_slug] = courtlistener.deploy(
-        cl_slug, cl_spec, image_ref, image, src.path, clients
-    )
-    cl_shas[cl_slug] = src.sha
-    project_urns += cl_deploys[cl_slug].project_urns
-
-for mcp_slug, mcp_spec in deploys.MCP.items():
-    image_ref, image, src = image_for(
-        mcp_spec.repo,
-        mcp_spec.ref,
-        "flp-dev-mcp",
-        "Dockerfile",
-        lambda src: {"TARGET_ENV": "prod", "GIT_SHA": src.tag},
-    )
-    client_id, client_secret = oauth_pairs[mcp_slug]
-    deployed = mcp.deploy(
-        mcp_slug,
-        mcp_spec,
-        image_ref,
-        image,
-        cl_deploys[mcp_spec.courtlistener].host,
-        client_id.result,
-        client_secret.result,
-    )
-    project_urns += deployed.project_urns
-    pulumi.export(f"mcp_{mcp_slug}_url", f"https://{deployed.host}")
-    pulumi.export(f"mcp_{mcp_slug}_sha", src.sha)
-    pulumi.export(
-        f"mcp_{mcp_slug}_courtlistener", cl_deploys[mcp_spec.courtlistener].host
-    )
-
-for cl_slug, deployed in cl_deploys.items():
-    pulumi.export(f"courtlistener_{cl_slug}_url", f"https://{deployed.host}")
-    pulumi.export(f"courtlistener_{cl_slug}_sha", cl_shas[cl_slug])
-
-do.ProjectResources(
-    "project-resources",
-    project=core.project.id,
-    resources=project_urns,
+droplet = do.Droplet(
+    "tunnel",
+    name="flp-dev-tunnel",
+    image="ubuntu-24-04-x64",
+    size="s-1vcpu-2gb",
+    region=REGION,
+    user_data=pulumi.Output.secret("#cloud-config\n" + yaml.safe_dump(cloud_config)),
 )
 
-pulumi.export("cluster_name", core.cluster.name)
-pulumi.export(
-    "kubeconfig", pulumi.Output.secret(core.cluster.kube_configs[0].raw_config)
+# The reserved IP keeps DNS stable across droplet replacements (any change
+# to the files above replaces the droplet).
+ip = do.ReservedIp("ip", region=REGION)
+do.ReservedIpAssignment(
+    "ip-assignment", ip_address=ip.ip_address, droplet_id=droplet.id.apply(int)
 )
-pulumi.export("load_balancer_ip", core.lb_ip)
-pulumi.export("zone", deploys.ZONE)
-pulumi.export("postgres_host", core.postgres.host)
-pulumi.export("postgres_port", core.postgres.port)
-pulumi.export("postgres_user", core.postgres.user)
-pulumi.export("postgres_password", pulumi.Output.secret(core.postgres.password))
+
+do.DnsRecord(
+    "dns-tunnel", domain=DOMAIN, type="A", name="tunnel", value=ip.ip_address, ttl=300
+)
+do.DnsRecord(
+    "dns-wildcard", domain=DOMAIN, type="A", name="*", value=ip.ip_address, ttl=300
+)
+
+do.Firewall(
+    "firewall",
+    name="flp-dev-tunnel",
+    droplet_ids=[droplet.id.apply(int)],
+    inbound_rules=[
+        do.FirewallInboundRuleArgs(
+            protocol="tcp", port_range=port, source_addresses=["0.0.0.0/0", "::/0"]
+        )
+        # admin ssh, http, https, sish
+        for port in ("22", "80", "443", "2222")
+    ],
+    outbound_rules=[
+        do.FirewallOutboundRuleArgs(
+            protocol=protocol,
+            port_range="all",
+            destination_addresses=["0.0.0.0/0", "::/0"],
+        )
+        for protocol in ("tcp", "udp")
+    ],
+)
+
+do.Project(
+    "project",
+    name="flp-dev",
+    description=f"Dev tunnel: https://<name>.{DOMAIN} -> a local port",
+    purpose="Web Application",
+    environment="Development",
+    resources=[droplet.droplet_urn],
+)
+
+pulumi.export("ip", ip.ip_address)
+pulumi.export("connect", f"ssh -p 2222 -R <name>:80:localhost:<port> tunnel.{DOMAIN}")

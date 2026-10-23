@@ -1,139 +1,85 @@
 # flp-dev-infra
 
-Disposable, production-shaped deployments of CourtListener and its MCP
-server on DigitalOcean, any number of versions side by side, for testing
-OAuth and multi-pod behaviour with real MCP clients. Managed with Pulumi;
-deployed from GitHub Actions. See [plan.md](plan.md) for the why, the design
-and the roadmap.
-
-Every deploy is a **slug** in [infra/deploys.py](infra/deploys.py) and gets a
-stable hostname under `flp-dev.nates.ai`:
-
-| Slug kind     | Hostname                          |
-|---------------|-----------------------------------|
-| CourtListener | `https://cl-<slug>.flp-dev.nates.ai`  |
-| MCP server    | `https://mcp-<slug>.flp-dev.nates.ai` |
-
-Adding, changing or removing a deploy is an edit to that file and a merged
-PR. Nothing else: no DNS, no workflow inputs, no secrets.
-
-## Layout
-
-- `notes/` — working notes. `notes/deploys.md` is the always-current table
-  of what is deployed; every PR that changes a deploy updates it.
-- `infra/` — the Pulumi program (Python, uv). Stack: `dev`.
-  - `deploys.py` — the config: one `CourtListenerDeploy` / `McpDeploy` per
-    slug (repo, git ref, env overrides, bootstrap options, which slug it
-    points at).
-  - `checkout.py` — fetches every (repo, ref) the config names into
-    `../sources` and writes `manifest.json` (resolved shas). Run before
-    Pulumi, locally and in CI.
-  - `core/` — the DO project (`flp-dev`), Kubernetes cluster, managed
-    Postgres, ingress-nginx + its load balancer, cert-manager, the shared
-    DNS zone with its wildcard record, GHCR image helpers, the sources
-    manifest reader.
-  - `courtlistener/` — `deploy(slug, ...)`: namespace, redis, elasticsearch,
-    Spaces buckets, the settings overlay and bootstrap/seed scripts, the
-    bootstrap Job, web + celery, ingress.
-  - `mcp/` — `deploy(slug, ...)`: namespace, redis, the server (2+ replicas),
-    ingress.
-  - `__main__.py` — builds one image per (repo, sha), generates one OAuth
-    client pair per MCP slug, deploys every slug, assigns DO resources.
-- `.github/workflows/ci.yml` — `pulumi preview` on every PR (the `preview`
-  check the ruleset requires).
-- `.github/workflows/deploy.yml` — `pulumi up` when a PR merges into main,
-  or by hand.
-
-## Conventions
-
-Borrowed from nadahlberg/infra:
-
-- **Naming: `<project>-<resource>`.** Shared resources use `flp-dev`
-  (`flp-dev-k8s`, `flp-dev-db`, `flp-dev-lb`, `flp-dev-zone`); a slug's
-  resources use `cl-<slug>-` and `mcp-<slug>-`. Kubernetes objects get
-  short, stable names (`web`, `celery`, `redis`, `elasticsearch`, `mcp`)
-  inside the slug's namespace (`cl-<slug>`, `mcp-<slug>`).
-- **Core owns, slugs point.** Slugs add logical databases (`cl_<slug>`,
-  `mcp_<slug>`) to `flp-dev-db` and Ingress rules behind `flp-dev-lb`; they
-  never create their own cluster, LB or database cluster. Apps connect as
-  the shared admin user. Each CourtListener slug has its own Redis,
-  Elasticsearch and Spaces buckets; each MCP slug its own Redis.
-- **A git ref is the unit of deployment.** Branch, tag or sha. Images are
-  tagged with the resolved short sha, so slugs on the same sha share one
-  image and an unchanged sha does not rebuild. A branch ref redeploys when
-  the branch moves (on the next merge here, or a manual dispatch).
-- **Secrets are passed through explicitly.** The workflows name every secret
-  they expose; modules read each one with `os.getenv`. Pulumi generates the
-  rest (Django secret key, OIDC key, per-pair OAuth client credentials, MCP
-  keys).
-- **Images on GHCR**, `ghcr.io/nadahlberg/flp-dev-{courtlistener,mcp}:<sha>`.
-  DO allows one registry per account and the infra repo has it.
-- **Deploy modules return a dataclass** (`host`, `namespace`,
-  `project_urns`); `__main__.py` assigns the URNs to the DO project.
-
-## Secrets and variables
-
-GitHub Actions secrets on this repo:
-
-| Secret                | Purpose                                                       |
-|-----------------------|---------------------------------------------------------------|
-| `PULUMI_ACCESS_TOKEN` | Pulumi Cloud                                                  |
-| `DIGITALOCEAN_TOKEN`  | DigitalOcean API                                              |
-| `GH_TOKEN`            | Classic PAT: `repo`, `read:packages`, `write:packages`. Fetches app sources, pushes images, backs the cluster's pull secrets |
-| `DEV_USER_EMAIL`      | Email of the CL superuser every slug's bootstrap creates      |
-| `DEV_USER_PASSWORD`   | Its password, also used for `test1..testN`                    |
-| `CL_API_TOKEN`        | Optional. courtlistener.com token for `clone_from_cl`         |
-| `CL_SENTRY_DSN`       | Optional                                                      |
-| `MCP_SENTRY_DSN`      | Optional                                                      |
-
-Variable (optional): `DEV_USER_NAME` (default `dev`). Locally the same
-names live in `.env` (gitignored); see `.env.example`.
-
-## Deploying
-
-Merging a PR into main deploys. Typical changes to `infra/deploys.py`:
-
-- **Deploy a branch**: add a slug with `ref="my-branch"`.
-- **Pin a version**: `ref="<sha>"`; it never moves.
-- **Point an MCP at a CourtListener**: `McpDeploy(ref=..., courtlistener="<cl slug>")`.
-  The CL side registers that MCP's OAuth client automatically.
-- **Tell a CourtListener which MCP gets its DCR clients**:
-  `CourtListenerDeploy(..., mcp="<mcp slug>")`.
-- **Override environment**: `env={"SOME_VAR": "value"}` on either kind.
-- **Change the bootstrap**: `seed_dev_data`, `index_search`, `test_users`,
-  `bootstrap_extra=("./manage.py something",)`.
-- **Remove a deploy**: delete the slug. Pulumi deletes its namespace,
-  database, buckets and certificates.
-
-Locally:
+A dev tunnel. Expose a port on your machine at a stable public HTTPS
+hostname, for the things localhost can't do: OAuth redirect URIs, webhooks,
+and MCP clients like Claude and ChatGPT that have to reach your server over
+the open internet.
 
 ```sh
-cd infra
-set -a; source ../.env; set +a
-uv run python checkout.py          # fetches sources into ../sources
-pulumi up --stack dev
+ssh -p 2222 -R <name>:80:localhost:<port> tunnel.docspace.ai
 ```
 
-Pulumi config (optional): `region` (nyc3), `nodeSize` (s-4vcpu-8gb),
-`nodeCount` (3).
+That's the whole client. `https://<name>.docspace.ai` now routes to
+`localhost:<port>` until the ssh exits. Names are first come, first served
+while held; the bind fails if someone else has it.
 
-## Operating
+## Getting access
+
+Add your GitHub username to [users](users) and merge the PR (label it
+`skip-deploy` — no deploy needed). The server re-syncs everyone's keys from
+`github.com/<user>.keys` every minute, and you connect with the matching
+private key. Nothing to install or configure on your side.
+
+## Using it
+
+A CourtListener dev server on :8000, public at `https://cl-nathan.docspace.ai`:
 
 ```sh
-doctl kubernetes cluster kubeconfig save flp-dev-k8s
-kubectl get ns                                          # cl-<slug>, mcp-<slug>
-kubectl -n cl-main get pods
-kubectl -n cl-main logs job/<bootstrap job>             # migrate/seed output
-kubectl -n cl-main exec deploy/web -- ./manage.py shell
-kubectl -n mcp-main get pods -o wide                    # which node each MCP pod is on
-kubectl -n mcp-main logs deploy/mcp --all-containers -f
-pulumi stack output                                     # every slug's URL and sha
+ssh -p 2222 -R cl-nathan:80:localhost:8000 tunnel.docspace.ai
 ```
 
-The bootstrap Job re-runs on every deploy of a slug: migrations,
-`collectstatic`, `seed.py` (users, the OAuth applications of the MCP slugs
-pointing at it, `make_dev_data` on an empty database when `seed_dev_data`),
-the Elasticsearch index commands when `index_search`, then the slug's
-`bootstrap_extra` commands.
+To ride through network drops, same thing via autossh:
 
-`pulumi destroy --stack dev` removes everything, including the DO project.
+```sh
+autossh -M 0 -p 2222 -R cl-nathan:80:localhost:8000 tunnel.docspace.ai
+```
+
+The app behind the tunnel still has to accept its public hostname — for
+Django that's `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS` and
+`SECURE_PROXY_SSL_HEADER`; for the MCP server, `MCP_BASE_URL`.
+
+## How it works
+
+One $12/mo droplet (`flp-dev-tunnel`) runs two containers:
+
+- [sish](https://github.com/antoniomika/sish) terminates the ssh tunnels on
+  :2222 and routes each HTTP request by hostname to the tunnel that claimed
+  it. Auth is the synced public keys — [users](users) is the entire access
+  model.
+- [Caddy](https://caddyserver.com) in front holds a single wildcard
+  `*.docspace.ai` certificate (DNS-01 against the DigitalOcean zone).
+
+The repo root is the droplet: [docker-compose.yml](docker-compose.yml),
+[docker/caddy/](docker/caddy) and [scripts/sync-keys.sh](scripts/sync-keys.sh)
+are written to `/opt/tunnel` by cloud-init. [infra/](infra) is ~100 lines of
+Pulumi: the droplet, a reserved IP, two DNS records and a firewall.
+
+## Deploying and operating
+
+Merging to main deploys (`pulumi preview` runs on PRs; a merged PR labeled
+`skip-deploy` doesn't deploy). Secrets: `PULUMI_ACCESS_TOKEN` and
+`DIGITALOCEAN_TOKEN`. Locally:
+
+```sh
+set -a; source .env; set +a
+cd infra && pulumi up --stack dev
+```
+
+Changing any of the mirrored files replaces the droplet (a few minutes;
+open tunnels reconnect, and the reserved IP keeps DNS stable). Admin:
+`ssh root@tunnel.docspace.ai` (root gets the `ADMIN` user's GitHub keys),
+then `cd /opt/tunnel && docker compose logs -f`.
+
+Hardening TODO: Caddy holds the account-wide `DIGITALOCEAN_TOKEN` for the
+DNS challenge; swap in a token scoped to the docspace.ai zone.
+
+## Porting to FLP's AWS
+
+The service is three files at the repo root. Moving it is an EC2 instance, a
+Route53 wildcard record and the same cloud-init; nothing else changes.
+
+## notes/
+
+Working notes from this repo's previous incarnation (production-shaped
+CourtListener + MCP deploys on DO Kubernetes), kept while the
+[legacy-clients experiment](notes/legacy-clients.md) finishes.

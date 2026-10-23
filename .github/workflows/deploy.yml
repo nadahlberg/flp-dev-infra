@@ -7,8 +7,6 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
-  # Re-run the current main by hand (for example after a late replay of an
-  # older commit, or to pick up a moved branch ref without a config change).
   workflow_dispatch:
 
 concurrency:
@@ -16,8 +14,8 @@ concurrency:
 
 jobs:
   infra:
-    # A merged PR labeled `skip-deploy` does not deploy (docs-only changes,
-    # workflow tweaks); run the workflow by hand if one turns out to matter.
+    # A merged PR labeled `skip-deploy` does not deploy (docs or `users`
+    # changes); run the workflow by hand if one turns out to matter.
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'skip-deploy')) }}
     runs-on: ubuntu-latest
     steps:
@@ -26,14 +24,6 @@ jobs:
           ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
       - uses: astral-sh/setup-uv@v10.0.1
-
-      - name: Fetch the app sources named in infra/deploys.py
-        run: |
-          uv run --project infra python infra/checkout.py --dir "$GITHUB_WORKSPACE/sources"
-          echo '### Sources' >> "$GITHUB_STEP_SUMMARY"
-          python3 -c "import json; [print(f'- {k}: {v[\"sha\"]}') for k, v in json.load(open('sources/manifest.json')).items()]" >> "$GITHUB_STEP_SUMMARY"
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - uses: pulumi/actions@v7
         with:
@@ -44,11 +34,3 @@ jobs:
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          SOURCES_MANIFEST: ${{ github.workspace }}/sources/manifest.json
-          DEV_USER_NAME: ${{ vars.DEV_USER_NAME || 'dev' }}
-          DEV_USER_EMAIL: ${{ secrets.DEV_USER_EMAIL }}
-          DEV_USER_PASSWORD: ${{ secrets.DEV_USER_PASSWORD }}
-          CL_API_TOKEN: ${{ secrets.CL_API_TOKEN }}
-          CL_SENTRY_DSN: ${{ secrets.CL_SENTRY_DSN }}
-          MCP_SENTRY_DSN: ${{ secrets.MCP_SENTRY_DSN }}
