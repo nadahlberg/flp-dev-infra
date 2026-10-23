@@ -75,8 +75,3 @@ scratch:
 [infra/](infra) and [.github/workflows/](.github/workflows) are one
 concrete deployment of the above and the only pieces tied to it — delete
 both and do the five steps your way.
-
-## notes/
-
-Working notes from this repo's previous incarnation, kept while the
-[legacy-clients experiment](notes/legacy-clients.md) finishes.
