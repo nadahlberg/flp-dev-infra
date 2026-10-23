@@ -19,6 +19,8 @@ PR. Nothing else: no DNS, no workflow inputs, no secrets.
 
 ## Layout
 
+- `notes/` — working notes. `notes/deploys.md` is the always-current table
+  of what is deployed; every PR that changes a deploy updates it.
 - `infra/` — the Pulumi program (Python, uv). Stack: `dev`.
   - `deploys.py` — the config: one `CourtListenerDeploy` / `McpDeploy` per
     slug (repo, git ref, env overrides, bootstrap options, which slug it
