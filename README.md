@@ -1,4 +1,4 @@
-# flp-dev-infra
+# flp-tunnel
 
 A dev tunnel. Expose a port on your machine at a stable public HTTPS
 hostname, for the things localhost can't do: OAuth redirect URIs, webhooks,
@@ -6,32 +6,31 @@ and MCP clients like Claude and ChatGPT that have to reach your server over
 the open internet.
 
 ```sh
-ssh -p 2222 -R <name>:80:localhost:<port> tunnel.docspace.ai
+ssh -p 2222 -R <name>:80:localhost:<port> tunnel.flp-tunnel.xyz
 ```
 
-That's the whole client. `https://<name>.docspace.ai` now routes to
+That's the whole client. `https://<name>.flp-tunnel.xyz` now routes to
 `localhost:<port>` until the ssh exits. Names are first come, first served
 while held; the bind fails if someone else has it.
 
 ## Getting access
 
-Add your GitHub username to [users](users) and merge the PR (label it
-`skip-deploy` — no deploy needed). The server re-syncs everyone's keys from
-`github.com/<user>.keys` every minute, and you connect with the matching
-private key. Nothing to install or configure on your side.
+Add your GitHub username to [users](users) and merge the PR. The server
+re-syncs everyone's keys from `github.com/<user>.keys` every minute, and you
+connect with the matching private key. Nothing to install or configure.
 
 ## Using it
 
-A CourtListener dev server on :8000, public at `https://cl-nathan.docspace.ai`:
+A Django dev server on :8000, public at `https://cl-nathan.flp-tunnel.xyz`:
 
 ```sh
-ssh -p 2222 -R cl-nathan:80:localhost:8000 tunnel.docspace.ai
+ssh -p 2222 -R cl-nathan:80:localhost:8000 tunnel.flp-tunnel.xyz
 ```
 
-To ride through network drops, same thing via autossh:
+To ride through network drops, the same thing via autossh:
 
 ```sh
-autossh -M 0 -p 2222 -R cl-nathan:80:localhost:8000 tunnel.docspace.ai
+autossh -M 0 -p 2222 -R cl-nathan:80:localhost:8000 tunnel.flp-tunnel.xyz
 ```
 
 The app behind the tunnel still has to accept its public hostname — for
@@ -40,46 +39,44 @@ Django that's `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS` and
 
 ## How it works
 
-One $12/mo droplet (`flp-dev-tunnel`) runs two containers:
+One small VM runs the two containers in [docker-compose.yml](docker-compose.yml):
 
 - [sish](https://github.com/antoniomika/sish) terminates the ssh tunnels on
   :2222 and routes each HTTP request by hostname to the tunnel that claimed
   it. Auth is the synced public keys — [users](users) is the entire access
   model.
 - [Caddy](https://caddyserver.com) in front holds a single wildcard
-  `*.docspace.ai` certificate (DNS-01 against the DigitalOcean zone).
+  certificate, solved with a DNS-01 challenge against the zone.
 
-The repo root is the droplet: [docker-compose.yml](docker-compose.yml),
-[docker/caddy/](docker/caddy) and [scripts/sync-keys.sh](scripts/sync-keys.sh)
-are written to `/opt/tunnel` by cloud-init. [infra/](infra) is ~100 lines of
-Pulumi: the droplet, a reserved IP, two DNS records and a firewall.
+A cron runs [scripts/sync-keys.sh](scripts/sync-keys.sh) every minute to
+mirror the `users` file's GitHub keys into sish's watched directory, so
+access changes need no deploy.
 
-## Deploying and operating
+## Deploying
 
-Merging to main deploys (`pulumi preview` runs on PRs; a merged PR labeled
-`skip-deploy` doesn't deploy). Secrets: `PULUMI_ACCESS_TOKEN` and
-`DIGITALOCEAN_TOKEN`. Locally:
+The service is the repo root mirrored to `/opt/tunnel` on the VM. From
+scratch:
 
-```sh
-set -a; source .env; set +a
-cd infra && pulumi up --stack dev
-```
+1. One small VM (a t4g.small-class instance is plenty) with Docker, the
+   repo root at `/opt/tunnel`, and `docker compose up --build --detach`.
+2. A dedicated domain with `tunnel` and `*` A records at the VM's static
+   IP. Use a domain of its own, not a subdomain of a production site —
+   tunneled apps would otherwise be same-site with production (cookie
+   scope, SameSite).
+3. TLS: swap the Caddy DNS plugin in
+   [docker/caddy/Dockerfile](docker/caddy/Dockerfile) for the zone's
+   provider (e.g. `caddy-dns/route53`), adjust the `tls` block in the
+   [Caddyfile](docker/caddy/Caddyfile), and hand it a token scoped to the
+   zone (the `DO_DNS_TOKEN` env in the compose file).
+4. Open inbound 22 (admin ssh), 80, 443 and 2222 (tunnels).
+5. Point the URL in [scripts/sync-keys.sh](scripts/sync-keys.sh) at the
+   `users` file on your fork.
 
-Changing any of the mirrored files replaces the droplet (a few minutes;
-open tunnels reconnect, and the reserved IP keeps DNS stable). Admin:
-`ssh root@tunnel.docspace.ai` (root gets the `ADMIN` user's GitHub keys),
-then `cd /opt/tunnel && docker compose logs -f`.
-
-Hardening TODO: Caddy holds the account-wide `DIGITALOCEAN_TOKEN` for the
-DNS challenge; swap in a token scoped to the docspace.ai zone.
-
-## Porting to FLP's AWS
-
-The service is three files at the repo root. Moving it is an EC2 instance, a
-Route53 wildcard record and the same cloud-init; nothing else changes.
+[infra/](infra) and [.github/workflows/](.github/workflows) are one
+concrete deployment of the above and the only pieces tied to it — delete
+both and do the five steps your way.
 
 ## notes/
 
-Working notes from this repo's previous incarnation (production-shaped
-CourtListener + MCP deploys on DO Kubernetes), kept while the
+Working notes from this repo's previous incarnation, kept while the
 [legacy-clients experiment](notes/legacy-clients.md) finishes.
