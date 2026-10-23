@@ -5,6 +5,6 @@
 		dns digitalocean {env.DO_DNS_TOKEN}
 	}
 	@home host tunnel.flp-tunnel.xyz
-	respond @home "flp dev tunnel — see github.com/nadahlberg/flp-dev-infra" 200
+	respond @home "flp-tunnel — see github.com/nadahlberg/flp-tunnel" 200
 	reverse_proxy sish:8080
 }
