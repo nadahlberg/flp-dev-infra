@@ -74,11 +74,6 @@ COURTLISTENER: dict[str, CourtListenerDeploy] = {
         mcp="main",
         aliases=("cl.nates.ai",),
     ),
-    # PR #8178: hand DCR clients over to the MCP server behind a flag.
-    "dcr": CourtListenerDeploy(
-        ref="8154-forward-dcr-clients-to-mcp-20261015",
-        mcp="dcr",
-    ),
     # plan.md Phase 8, step 1: the era before the MCP became its own
     # authorization server (courtlistener-api-client#357) — this CL is the
     # AS that real clients register with. Upgraded in place in step 2.
@@ -92,7 +87,6 @@ COURTLISTENER: dict[str, CourtListenerDeploy] = {
 
 MCP: dict[str, McpDeploy] = {
     "main": McpDeploy(ref="main", courtlistener="main"),
-    "dcr": McpDeploy(ref="main", courtlistener="dcr"),
     # plan.md Phase 8, step 1: the commit #357 merged onto. PGHOST is
     # blanked because this era's OAuth store is unused but its probe runs
     # asyncpg's default pool of ten per worker (the PGPOOL_MAX fix is
