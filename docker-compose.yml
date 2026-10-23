@@ -3,7 +3,7 @@ services:
     image: antoniomika/sish:v3.0.4
     restart: unless-stopped
     command:
-      - --domain=docspace.ai
+      - --domain=flp-tunnel.xyz
       - --ssh-address=:2222
       - --http-address=:8080
       - --authentication=true

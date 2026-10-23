@@ -1,10 +1,10 @@
 # One wildcard certificate (DNS-01 against the DigitalOcean zone). Every
 # request goes to sish, which routes by hostname to whichever tunnel claimed it.
-*.docspace.ai {
+*.flp-tunnel.xyz {
 	tls {
 		dns digitalocean {env.DO_DNS_TOKEN}
 	}
-	@home host tunnel.docspace.ai
+	@home host tunnel.flp-tunnel.xyz
 	respond @home "flp dev tunnel — see github.com/nadahlberg/flp-dev-infra" 200
 	reverse_proxy sish:8080
 }
