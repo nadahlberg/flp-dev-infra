@@ -90,7 +90,11 @@ COURTLISTENER: dict[str, CourtListenerDeploy] = {
 MCP: dict[str, McpDeploy] = {
     "main": McpDeploy(ref="main", courtlistener="main"),
     "dcr": McpDeploy(ref="main", courtlistener="dcr"),
-    "copilot-fix": McpDeploy(ref="main", courtlistener="copilot-fix"),
+    # PR courtlistener-api-client#387: Copilot Studio sends MCP requests to
+    # <origin>/mcp regardless of the configured URL; this branch aliases it.
+    "copilot-fix": McpDeploy(
+        ref="mcp-path-alias-20261023", courtlistener="copilot-fix"
+    ),
 }
 
 
