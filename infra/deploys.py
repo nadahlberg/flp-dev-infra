@@ -79,11 +79,22 @@ COURTLISTENER: dict[str, CourtListenerDeploy] = {
         ref="8154-forward-dcr-clients-to-mcp-20261015",
         mcp="dcr",
     ),
+    # plan.md Phase 8, step 1: the era before the MCP became its own
+    # authorization server (courtlistener-api-client#357) — this CL is the
+    # AS that real clients register with. Upgraded in place in step 2.
+    "legacy-clients": CourtListenerDeploy(
+        ref="07456f46a15045b834d351279d44948db042dcf8",
+    ),
 }
 
 MCP: dict[str, McpDeploy] = {
     "main": McpDeploy(ref="main", courtlistener="main"),
     "dcr": McpDeploy(ref="main", courtlistener="dcr"),
+    # plan.md Phase 8, step 1: the commit #357 merged onto.
+    "legacy-clients": McpDeploy(
+        ref="d0d414efbbd4441dbaa346dd80408a7564ea186d",
+        courtlistener="legacy-clients",
+    ),
 }
 
 

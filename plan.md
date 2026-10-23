@@ -163,6 +163,8 @@ check from `ci` must pass.
       `cl.nates.ai` Domain by Pulumi alias (#8); empty the old Spaces
       buckets by hand (Spaces refuses to delete non-empty ones), and set
       `force_destroy` on buckets so removing a slug never stalls on this.
+- [ ] 8. Legacy client migration experiment for courtlistener#8178 (see
+      below).
 
 ## Phase 7: multiple versions side by side (DESIGN, in progress)
 
@@ -319,6 +321,30 @@ app changes, no workflow inputs.
 - Spaces buckets must be empty to delete; buckets now carry `force_destroy`.
   Buckets created before that (if any remain) need emptying by hand with
   the key from `pulumi stack export`.
+
+## Phase 8: legacy client migration experiment (2026-10-23)
+
+Goal: validate courtlistener#8178 (hand dynamically registered OAuth
+clients over to the MCP server behind a flag) against clients that
+connected in the era when CourtListener was the authorization server,
+before the MCP became its own AS (courtlistener-api-client#357, merged
+2026-10-10).
+
+- [ ] 1. Deploy the `legacy-clients` slug pinned to the pre-cutover era:
+      CourtListener `07456f46a` (2026-10-09, CL-as-authorization-server)
+      and MCP `d0d414ef` (the commit #357 merged onto, introspection era).
+      Nathan then connects real production clients (Claude, Codex, …) to
+      `mcp-legacy-clients.flp-dev.nates.ai` via the old path, so they
+      register with CL and hold CL-issued tokens.
+- [ ] 2. Repoint the same slug in place — MCP to `main`, CourtListener to
+      `8154-forward-dcr-clients-to-mcp-20261015` (courtlistener#8178) —
+      keeping the namespaces and per-slug database, so the registered
+      clients and issued tokens survive the upgrade exactly as they would
+      in production.
+- [ ] 3. Nathan sets the #8178 flag for his user on `cl-legacy-clients`
+      and tests that the step-1 connections keep working: old tokens
+      honored, client handoff to the MCP per the flag.
+- [ ] 4. Tear the slug down when the experiment is done.
 
 ## Risks and open questions
 
