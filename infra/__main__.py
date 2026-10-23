@@ -1,7 +1,7 @@
 """One droplet running a dev tunnel: sish behind Caddy.
 
 Anyone listed in the repo's `users` file can expose a local port at
-https://<name>.docspace.ai with a single ssh command. See README.md.
+https://<name>.flp-tunnel.xyz with a single ssh command. See README.md.
 """
 
 import os
@@ -11,7 +11,7 @@ import pulumi
 import pulumi_digitalocean as do
 import yaml
 
-DOMAIN = "docspace.ai"  # existing DO zone, dedicated to the tunnel
+DOMAIN = "flp-tunnel.xyz"  # dedicated to the tunnel; the zone is created below
 ADMIN = "nadahlberg"  # GitHub user whose keys get root on the droplet
 REGION = "nyc3"
 
@@ -68,11 +68,12 @@ do.ReservedIpAssignment(
     "ip-assignment", ip_address=ip.ip_address, droplet_id=droplet.id.apply(int)
 )
 
+zone = do.Domain("zone", name=DOMAIN)
 do.DnsRecord(
-    "dns-tunnel", domain=DOMAIN, type="A", name="tunnel", value=ip.ip_address, ttl=300
+    "dns-tunnel", domain=zone.id, type="A", name="tunnel", value=ip.ip_address, ttl=300
 )
 do.DnsRecord(
-    "dns-wildcard", domain=DOMAIN, type="A", name="*", value=ip.ip_address, ttl=300
+    "dns-wildcard", domain=zone.id, type="A", name="*", value=ip.ip_address, ttl=300
 )
 
 do.Firewall(

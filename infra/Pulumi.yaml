@@ -1,5 +1,5 @@
 name: flp-dev-infra
-description: Dev tunnel - expose local ports at https://<name>.docspace.ai
+description: Dev tunnel - expose local ports at https://<name>.flp-tunnel.xyz
 runtime:
   name: python
   options:

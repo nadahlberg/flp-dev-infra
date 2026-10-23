@@ -5,7 +5,7 @@
 set -eu
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsS https://raw.githubusercontent.com/nadahlberg/flp-dev-infra/main/users >"$tmp/users"
+curl -fsS https://raw.githubusercontent.com/nadahlberg/flp-tunnel/main/users >"$tmp/users"
 grep -v '^#' "$tmp/users" | while read -r user; do
 	[ -z "$user" ] && continue
 	curl -fsS "https://github.com/$user.keys" >"$tmp/$user.pub" </dev/null
