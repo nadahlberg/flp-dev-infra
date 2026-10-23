@@ -38,7 +38,7 @@ api-client#357 merged onto; verifies bearers by CL introspection).
     1-hour expiry) and there are 4 unrevoked refresh tokens — the state
     phases 2 and 3 must carry through.
 
-## Phase 2: upgrade in place, flag OFF — next
+## Phase 2: upgrade in place, flag OFF — deployed, Nathan testing
 
 Repoint the same slug: MCP to `main` (its own authorization server, which
 still accepts CL-issued bearers by introspection and re-registers legacy
@@ -46,7 +46,9 @@ client ids on first use) and CourtListener to
 `8154-forward-dcr-clients-to-mcp-20261015` (the courtlistener#8178 branch,
 in review). The flag stays OFF.
 
-- PR: _added when it lands_.
+- PR: [#18](https://github.com/nadahlberg/flp-dev-infra/pull/18)
+  (2026-10-23). The CL deploy also gains `mcp="legacy-clients"`, wiring
+  `OAUTH2_MCP_URL` at the slug's MCP so phase 3 only flips the flag.
 - Tests (Nathan, by hand):
   - The phase-1 Claude and ChatGPT connections keep working through the
     legacy fallbacks — no re-auth prompt, tools list and run.
