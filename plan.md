@@ -331,16 +331,24 @@ before the MCP became its own AS (courtlistener-api-client#357, merged
 2026-10-10).
 
 - [ ] 1. Deploy the `legacy-clients` slug pinned to the pre-cutover era:
-      CourtListener `07456f46a` (2026-10-09, CL-as-authorization-server)
-      and MCP `d0d414ef` (the commit #357 merged onto, introspection era).
-      Nathan then connects real production clients (Claude, Codex, …) to
+      CourtListener `81528ac6d` (main's first-parent tip of 2026-10-09,
+      CL-as-authorization-server) and MCP `d0d414ef` (the commit #357
+      merged onto, introspection era). Nathan then connects real
+      production clients (Claude, Codex, …) to
       `mcp-legacy-clients.flp-dev.nates.ai` via the old path, so they
-      register with CL and hold CL-issued tokens.
+      register with CL and hold CL-issued tokens. Two traps found on the
+      first attempt: pin by `git rev-list --first-parent` (a date-picked
+      rev-list sha was a feature-branch commit missing CL#8087's
+      introspection `sub`, so every token verified as `invalid_token`),
+      and blank `PGHOST` on this MCP era (its unused OAuth-store probe
+      runs asyncpg's default pool of ten per worker and exhausts the
+      shared Postgres's connection slots).
 - [ ] 2. Repoint the same slug in place — MCP to `main`, CourtListener to
       `8154-forward-dcr-clients-to-mcp-20261015` (courtlistener#8178) —
       keeping the namespaces and per-slug database, so the registered
       clients and issued tokens survive the upgrade exactly as they would
-      in production.
+      in production. Drop the step-1 `PGHOST` override then: the main-ref
+      MCP needs the OAuth store.
 - [ ] 3. Nathan sets the #8178 flag for his user on `cl-legacy-clients`
       and tests that the step-1 connections keep working: old tokens
       honored, client handoff to the MCP per the flag.
